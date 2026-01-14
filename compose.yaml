@@ -1,0 +1,11 @@
+services:
+  grassgis_jupyter:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    platform: linux/amd64
+    volumes:
+      - ./data:/home/jovyan/data
+    ports:
+      - "8888:8888"
+
