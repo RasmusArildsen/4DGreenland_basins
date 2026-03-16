@@ -2,15 +2,14 @@
 
 This repository provides a command-line workflow for generating basin ensembles, optionally merging basin members, and creating ensemble summary products such as most-likely basins and stable/uncertain divides.
 
-The code is organized into five files:
+The code is organized into six files:
 
 - `run_ensemble.py` — thin CLI entry point
 - `ensemble_runner.py` — generates ensemble members and resumes incomplete runs
 - `ensemble_merge.py` — merges individual basin members
 - `ensemble_products.py` — builds final products and applies the selected merge strategy
 - `ensemble_postprocess.py` — stack-based ensemble logic and perturbation helpers
-
-This code expects `basin_core.py` to live in the same repository root, because it provides the GRASS helpers, hydrology pipeline, and `merge_basins()` implementation.
+- `basin_core.py` - provides the GRASS helpers, hydrology pipeline, and `merge_basins()` implementation.
 
 ## Commands
 
