@@ -129,7 +129,7 @@ Use this when you want a faster workflow and treat merging as a final cleanup st
 
 ## Configuration
 
-Use `config.example.toml` as a template.
+Use `config.toml` as a template.
 
 Important sections:
 
