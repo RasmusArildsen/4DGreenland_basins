@@ -147,11 +147,6 @@ k_min = 0.8
 k_max = 1.0
 ```
 
-Notes:
-
-- `n_members` is the preferred name
-- `n_mc` is still accepted for backward compatibility
-
 ### `[postprocess]`
 Controls merging and final products.
 
@@ -217,7 +212,4 @@ python run_ensemble.py products config.toml
 ```
 
 ## Notes
-
-- The CLI uses the term `ensemble` consistently in filenames and commands.
-- Internally, some low-level raster names still use legacy `mc` naming to stay compatible with the existing GRASS workflow and `basin_core.py`. This does not affect outputs written to disk.
 - The code assumes a working GRASS/QGIS installation and the paths defined in the config file.
