@@ -206,15 +206,14 @@ def ensure_grass_addon(module_name: str):
     """Install addon into the GRASS addon directory for the current platform."""
     import platform
 
-    if os.environ.get("GRASS_ADDON_BASE"):
-        addon_base = Path(os.environ["GRASS_ADDON_BASE"]).expanduser()
-    elif platform.system() == "Darwin":
+    system = platform.system()
+    if system == "Darwin":
         addon_base = Path.home() / ".grass8" / "addons"
-    elif platform.system() == "Linux":
-        addon_base = Path.home() / ".grass8" / "addons"
+    elif system == "Linux":
+        addon_base = Path(os.environ.get("GRASS_ADDON_BASE", str(Path.home() / ".grass8" / "addons"))).expanduser()
     else:
-        APPDATA = os.environ.get("APPDATA", str(Path.home()))
-        addon_base = Path(APPDATA) / "GRASS8" / "addons"
+        appdata = os.environ.get("APPDATA", str(Path.home()))
+        addon_base = Path(appdata) / "GRASS8" / "addons"
 
     addon_base.mkdir(parents=True, exist_ok=True)
     os.environ["GRASS_ADDON_BASE"] = str(addon_base)
@@ -222,22 +221,31 @@ def ensure_grass_addon(module_name: str):
     addon_bin = addon_base / "bin"
     addon_scripts = addon_base / "scripts"
 
-    os.environ["PATH"] = os.pathsep.join([str(addon_bin), str(addon_scripts), os.environ.get("PATH", "")])
-    os.environ["GRASS_ADDON_PATH"] = os.pathsep.join([str(addon_bin), str(addon_scripts)])
-
-    if find_program(module_name) is None:
-        gs.run_command("g.extension", extension=module_name, operation="add", flags="f")
+    os.environ["PATH"] = os.pathsep.join([
+        str(addon_bin),
+        str(addon_scripts),
+        os.environ.get("PATH", ""),
+    ])
+    os.environ["GRASS_ADDON_PATH"] = os.pathsep.join([
+        str(addon_bin),
+        str(addon_scripts),
+    ])
 
     path = find_program(module_name)
-    if path is None:
+    if not path:
+        print(f"→ Installing GRASS addon: {module_name}")
+        gs.run_command("g.extension", extension=module_name, operation="add", flags="f")
+        path = find_program(module_name)
+
+    if not path:
         inst = gs.read_command("g.extension", flags="l")
         raise RuntimeError(
             f"{module_name} not found after install.\n"
             f"GRASS_ADDON_BASE={addon_base}\n"
-            f"Installed addons (truncated):\n{inst[:600]}"
+            f"Installed addons:\n{inst[:600]}"
         )
-    print(f"✓ {module_name} at {path}")
 
+    print(f"✓ {module_name} at {path}")
 
 def import_raster_native(input_path: str, out_name: str):
     """Import or clone raster to a native GRASS raster (fast + robust)."""
