@@ -1,15 +1,58 @@
-# Ensemble basin workflow
+# Background
 
-This repository provides a command-line workflow for generating basin ensembles, optionally merging basin members, and creating ensemble summary products such as most-likely basins and stable/uncertain divides.
+The Greenland Ice Sheet (GrIS) is a dynamic cryo-hydrological system in which meltwater plays a central role in sea-level rise, downstream hydrology, landscape evolution, and ecosystem processes. As climate warming increases meltwater production, robust and consistent methods for delineating drainage basins are essential. However, no unified framework currently integrates both supraglacial and subglacial hydrological systems, limiting comparability across studies.
 
-The code is organized into six files:
+This repository presents the first ice-sheet-wide dataset of **surface**, **subglacial**, and **hybrid** drainage basins for the GrIS. The hybrid basins combine surface and subglacial routing to better represent meltwater pathways through the ice sheet.
 
-- `run_ensemble.py` — thin CLI entry point
-- `ensemble_runner.py` — generates ensemble members and resumes incomplete runs
-- `ensemble_merge.py` — merges individual basin members
-- `ensemble_products.py` — builds final products and applies the selected merge strategy
-- `ensemble_postprocess.py` — stack-based ensemble logic and perturbation helpers
-- `basin_core.py` - provides the GRASS helpers, hydrology pipeline, and `merge_basins()` implementation.
+Basins are generated using an **ensemble-based approach** that propagates input data uncertainties into basin delineation and produces accompanying uncertainty metrics. The workflow is fully reproducible and implemented in **Python** and **GRASS GIS**, enabling users to generate, adapt, and analyze drainage basins at multiple spatial resolutions.
+
+---
+
+# Ensemble Basin Workflow
+
+This repository provides a command-line workflow to:
+
+- generate ensembles of drainage basins  
+- optionally merge basin members  
+- derive ensemble summary products (e.g., most-likely basins and stable/uncertain divides)
+
+## Repository structure
+
+The codebase consists of six Python modules, a configuration file, and supporting mask data:
+
+- `run_ensemble.py` — CLI entry point  
+- `ensemble_runner.py` — generates ensemble members and resumes incomplete runs  
+- `ensemble_merge.py` — merges individual basin members  
+- `ensemble_products.py` — builds final products and applies merge strategies  
+- `ensemble_postprocess.py` — ensemble logic and perturbation utilities  
+- `basin_core.py` — GRASS GIS helpers, hydrology pipeline, and `merge_basins()`  
+- `config.toml` — configuration file (paths and run parameters)  
+- `Mask_files/` — input masks (ice sheet extent and routing transition zone)  
+
+---
+
+# Expected Inputs
+
+## Masks
+
+- Ice mask defining the domain of basin delineation  
+  - Example: [GEUS Dataset](https://doi.org/10.22008/FK2/O8CLRE)  
+  - Format: `.gpkg` polygon  
+
+- Mask defining transition from surface to subsurface routing  
+  - Example: Mask_files/Ice_sheet_lake_boundary.tif 
+  - Format: `.tif`   
+## Input surfaces
+
+- **Surface DEM (with uncertainty)**  
+  ArcticDEM v4.1 (100 m / 500 m) — [University of Minnesota](https://www.pgc.umn.edu/data/arcticdem/)  
+  Format: `.tif`
+
+- **Bed DEM (with uncertainty)**  
+  BedMachine Greenland v6 — [NSIDC Dataset](https://nsidc.org/data/idbmg4/versions/6)  
+  (150 m interpolated to 100 m / 500 m grid)  
+  Format: `.tif`
+
 
 ## Commands
 
