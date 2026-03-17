@@ -1,0 +1,72 @@
+[run]
+dem_mode = "surface"        # "surface" | "bed" | "hybrid"
+dem_res_m = 500            # 100 | 500
+n_members = 500            # preferred name; n_mc also still works
+start_i = 1
+seed_base = 0              # deterministic; member i uses seed_base + i
+k_min = 0.8
+k_max = 1.0
+
+[grass]
+gisbase = "/Applications/GRASS-8.4.app/Contents/Resources"
+location = "dem_loc"
+mapset_prefix = "MC_WORK"
+ensure_addons = ["r.stream.extract", "r.stream.basins"]
+
+[hydrology]
+stream_threshold_100m = 5000
+stream_threshold_500m = 200
+corr_pix_100m = 5
+corr_pix_500m = 5
+do_fill_dir = true
+watershed_memory = 600
+watershed_lowmem = true
+
+[inputs]
+ice_mask = "/Users/ralor/Rasmus/DTU/Jupyter_Notebook/4DGreenland_basins/data/ice_mask/02-PROMICE-2022-IceMask-polygon.gpkg"
+
+# 100 m
+dem_100m = "/Users/ralor/Rasmus/DTU/Cryo/DEM/arcticDEM_100m/arcticdem_mosaic_100m_v4.1_dem_clipped.tif"
+var_100m = "/Users/ralor/Rasmus/DTU/Cryo/DEM/arcticDEM_100m/arcticdem_mosaic_100m_v4.1_sigma_ice_masked.tif"
+bed_100m = "/Volumes/Lenovo PS8/4DBasins/til_rasmus/til_rasmus_ensemble/bedmachine_100m.tif"
+bed_err_100m = "/Volumes/Lenovo PS8/4DBasins/til_rasmus/til_rasmus_ensemble/bedmachine_errbed_100m.tif"
+bed_err_is_variance_100m = false
+
+
+# 500 m
+dem_500m = "/Users/ralor/Rasmus/DTU/Cryo/DEM/arcticDEM_500m_ice_sheet.tif"
+var_500m = "/Users/ralor/Rasmus/DTU/Cryo/DEM/arcticdem_mosaic_500m_v4.1/arcticdem_mosaic_500m_v4.1_sigma_ice_masked.tif"
+bed_500m = "/Volumes/Lenovo PS8/4DBasins/til_rasmus/til_rasmus_ensemble/bedmachine_500m.tif"
+bed_err_500m = "/Volumes/Lenovo PS8/4DBasins/til_rasmus/til_rasmus_ensemble/err_bed_500m.tif"
+bed_err_is_variance_500m = false
+
+# hybrid mask
+surf_mask_2000 = "/Users/ralor/Rasmus/DTU/Cryo/DEM/arcticDEM_500m_ice_sheet_lake_boundary.tif"
+
+[outputs]
+surface_dir_100m = "/Volumes/Lenovo PS8/4DBasins/surf_100m"
+bed_dir_100m     = "/Volumes/Lenovo PS8/4DBasins/bed_100m"
+hybrid_dir_100m  = "/Volumes/Lenovo PS8/4DBasins/hybrid_100m"
+
+surface_dir_500m = "/Volumes/Lenovo PS8/4DBasins/surf_500m"
+bed_dir_500m     = "/Volumes/Lenovo PS8/4DBasins/bed_500m"
+hybrid_dir_500m  = "/Volumes/Lenovo PS8/4DBasins/hybrid_500m"
+
+save_surface_dem = false
+save_bed_dem = false
+save_phi_or_hybrid_dem = false
+
+[postprocess]
+# merge_strategy:
+#   "none"   -> no merge at all
+#   "member" -> merge every ensemble member first, then build final products
+#   "final"  -> build final products first, then merge basins_most_likely.tif once
+merge_strategy = "member"
+
+merge_output_subdir = "merged_members"
+merge_min_basin_km2 = 500.0
+merge_do_exclaves = true
+merge_max_exclave_iters = 6
+
+p_stable_pixel = 0.90
+p_min_div = 0.00

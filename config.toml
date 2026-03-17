@@ -1,6 +1,6 @@
 [run]
-dem_mode = "hybrid"        # "surface" | "bed" | "hybrid"
-dem_res_m = 100            # 100 | 500
+dem_mode = "surface"        # "surface" | "bed" | "hybrid"
+dem_res_m = 500            # 100 | 500
 n_members = 500            # preferred name; n_mc also still works
 start_i = 1
 seed_base = 0              # deterministic; member i uses seed_base + i
@@ -23,7 +23,7 @@ watershed_memory = 600
 watershed_lowmem = true
 
 [inputs]
-ice_mask = "/Users/ralor/Rasmus/DTU/Jupyter_Notebook/4DGreenland_basins/data/ice_mask/02-PROMICE-2022-IceMask-polygon.gpkg"
+ice_mask = "Mask_files/02-PROMICE-2022-IceMask-polygon-v3.gpkg"
 
 # 100 m
 dem_100m = "/Users/ralor/Rasmus/DTU/Cryo/DEM/arcticDEM_100m/arcticdem_mosaic_100m_v4.1_dem_clipped.tif"
@@ -41,7 +41,7 @@ bed_err_500m = "/Volumes/Lenovo PS8/4DBasins/til_rasmus/til_rasmus_ensemble/err_
 bed_err_is_variance_500m = false
 
 # hybrid mask
-surf_mask_2000 = "/Users/ralor/Rasmus/DTU/Cryo/DEM/arcticDEM_500m_ice_sheet_lake_boundary.tif"
+surf_mask_2000 = "Mask_files/Ice_sheet_lake_boundary.tif"
 
 [outputs]
 surface_dir_100m = "/Volumes/Lenovo PS8/4DBasins/surf_100m"
@@ -61,7 +61,7 @@ save_phi_or_hybrid_dem = false
 #   "none"   -> no merge at all
 #   "member" -> merge every ensemble member first, then build final products
 #   "final"  -> build final products first, then merge basins_most_likely.tif once
-merge_strategy = "final"
+merge_strategy = "member"
 
 merge_output_subdir = "merged_members"
 merge_min_basin_km2 = 500.0
