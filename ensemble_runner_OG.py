@@ -193,7 +193,6 @@ def init_grass(rt: Dict[str, Any]):
         rt["DEM"],
         location=str(rt["grass_cfg"].get("location", "dem_loc")),
         mapset=mapset_name,
-        gisdbase=rt["grass_cfg"].get("gisdbase"),
     )
     for mod in rt["grass_cfg"].get("ensure_addons", []):
         ensure_grass_addon(mod)

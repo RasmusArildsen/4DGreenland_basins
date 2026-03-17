@@ -1,0 +1,9 @@
+services:
+  basins:
+    build: .
+    image: 4dgreenland-basins:latest
+    working_dir: /app
+    volumes:
+      - .:/app
+      - ./data:/data
+    command: ["all", "config.toml"]

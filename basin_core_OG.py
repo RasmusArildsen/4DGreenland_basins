@@ -11,27 +11,7 @@ from typing import Optional, Dict, List, Tuple
 # -----------------------------------------------------------------------------
 # Defaults
 # -----------------------------------------------------------------------------
-QGIS_PREFIX_DEFAULT = os.environ.get("GISBASE", "/usr/lib/grass84")
-
-
-def _guess_gisbase() -> Path:
-    candidates = [
-        os.environ.get("GISBASE"),
-        "/usr/lib/grass84",
-        "/usr/lib/grass",
-        "/Applications/GRASS-8.4.app/Contents/Resources",
-        "/Applications/GRASS.app/Contents/Resources",
-    ]
-    for candidate in candidates:
-        if not candidate:
-            continue
-        path = Path(candidate).resolve()
-        if (path / "etc" / "python" / "grass" / "__init__.py").exists():
-            return path
-    raise RuntimeError(
-        "Could not locate a working GRASS GIS installation. "
-        "Set [grass].gisbase in config.toml or the GISBASE environment variable."
-    )
+QGIS_PREFIX_DEFAULT = "/Applications/GRASS-8.4.app/Contents/Resources"
 
 # Filled after setup_grass_env()
 gs = None
@@ -69,13 +49,16 @@ def _grass_bin() -> str:
     return str(grass_bin)
 
 
-def setup_grass_env(grass_gisbase: str | None = None):
+def setup_grass_env(grass_gisbase: str = QGIS_PREFIX_DEFAULT):
     """
-    Configure GRASS Python bindings for macOS or Linux.
-    The path can come from the config, the GISBASE environment variable,
-    or a small set of common install locations.
+    macOS: point Python to the GRASS.app installation.
     """
-    GISBASE = Path(grass_gisbase).resolve() if grass_gisbase else _guess_gisbase()
+    import platform
+
+    if platform.system() != "Darwin":
+        raise RuntimeError("setup_grass_env() here is macOS-only. Use your Windows version on Windows.")
+
+    GISBASE = Path(grass_gisbase).resolve()
     grass_python = GISBASE / "etc" / "python"
     init_py = grass_python / "grass" / "__init__.py"
     if not init_py.exists():
@@ -171,12 +154,12 @@ def ensure_mapset(gisdbase: Path, location: str, mapset: str):
     subprocess.run(cmd, check=True, env=_grass_subprocess_env())
 
 
-def start_grass_from_raster(raster_path: str, *, location="dem_loc", mapset="MC_WORK", gisdbase: str | Path | None = None):
+def start_grass_from_raster(raster_path: str, *, location="dem_loc", mapset="MC_WORK"):
     """
     Ensure GRASS location+mapset exist (creating/repairing if needed),
     then init a GRASS Python session.
     """
-    gisdbase = Path(gisdbase or os.environ.get("GRASS_GISDBASE") or (Path.home() / "Documents" / "grassdata"))
+    gisdbase = Path.home() / "Documents" / "grassdata"
     gisdbase.mkdir(parents=True, exist_ok=True)
 
     ensure_location(raster_path, gisdbase, location)
@@ -203,14 +186,10 @@ def safe(expr: str):
 
 
 def ensure_grass_addon(module_name: str):
-    """Install addon into the GRASS addon directory for the current platform."""
+    """Install addon into ~/.grass8/addons on macOS (or APPDATA/GRASS8/addons on Windows)."""
     import platform
 
-    if os.environ.get("GRASS_ADDON_BASE"):
-        addon_base = Path(os.environ["GRASS_ADDON_BASE"]).expanduser()
-    elif platform.system() == "Darwin":
-        addon_base = Path.home() / ".grass8" / "addons"
-    elif platform.system() == "Linux":
+    if platform.system() == "Darwin":
         addon_base = Path.home() / ".grass8" / "addons"
     else:
         APPDATA = os.environ.get("APPDATA", str(Path.home()))
