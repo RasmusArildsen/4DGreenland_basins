@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from shutil import copyfile
 from pathlib import Path
 
 import numpy as np
@@ -49,72 +50,42 @@ def majority_label_and_cert(stack_2d: np.ndarray) -> tuple[np.ndarray, np.ndarra
     return majority, certainty
 
 
-def build_ensemble_products(
-    ensemble_dir,
-    basin_pattern: str = "basins_hydro_ens_*.tif",
-    ref_index: int = 0,
-    chunk_rows: int = 32,
-    p_stable_pixel: float = 0.90,
-    p_min_div: float = 0.00,
-    out_most_likely: str | Path | None = None,
-    out_cert: str | Path | None = None,
-    out_uncert: str | Path | None = None,
-    out_bound_prob: str | Path | None = None,
-    out_stable_div: str | Path | None = None,
-    out_uncert_div: str | Path | None = None,
-    run_merge: bool = False,
-    merge_dem: str | Path | None = None,
-    merge_res_m: int = 500,
-    merge_min_basin_km2: float = 500.0,
-    merge_do_exclaves: bool = True,
-    merge_max_exclave_iters: int = 6,
-    out_merged: str | Path | None = None,
-):
-    ensemble_dir = Path(ensemble_dir)
-
-    if out_most_likely is None:
-        out_most_likely = ensemble_dir / "basins_most_likely.tif"
-    if out_cert is None:
-        out_cert = ensemble_dir / "basins_certainty.tif"
-    if out_uncert is None:
-        out_uncert = ensemble_dir / "basins_uncertainty.tif"
-    if out_bound_prob is None:
-        out_bound_prob = ensemble_dir / "basin_boundary_probability.tif"
-    if out_stable_div is None:
-        out_stable_div = ensemble_dir / "basin_stable_divides.tif"
-    if out_uncert_div is None:
-        out_uncert_div = ensemble_dir / "basin_uncertain_divides.tif"
-    if out_merged is None:
-        out_merged = ensemble_dir / "basins_most_likely_merged.tif"
-
-    basin_files = sorted(ensemble_dir.glob(basin_pattern))
-    if not basin_files:
-        raise FileNotFoundError(f"No files matching {basin_pattern} in {ensemble_dir}")
-
-    n_members = len(basin_files)
-    ref_file = basin_files[ref_index]
-    print(f"Found {n_members} realisations; reference = {ref_file.name}")
-
-    with rasterio.open(ref_file) as src_ref:
-        meta = src_ref.meta.copy()
-        width, height = src_ref.width, src_ref.height
-        nodata_ref = src_ref.nodata if src_ref.nodata is not None else 0
-
-        max_ref_label = 0
+def _scan_max_label(path: Path, *, chunk_rows: int) -> int:
+    max_label = 0
+    with rasterio.open(path) as src:
+        width, height = src.width, src.height
         for row_start in range(0, height, chunk_rows):
             row_stop = min(row_start + chunk_rows, height)
             window = Window(0, row_start, width, row_stop - row_start)
-            ref_chunk = src_ref.read(1, window=window)
-            max_ref_label = max(max_ref_label, int(ref_chunk.max()))
+            chunk = src.read(1, window=window)
+            if chunk.size:
+                max_label = max(max_label, int(chunk.max()))
+    return max_label
 
+
+def _build_label_maps(
+    *,
+    basin_files: list[Path],
+    ref_path: Path,
+    ref_index: int | None,
+    chunk_rows: int,
+) -> tuple[list[np.ndarray], dict]:
+    with rasterio.open(ref_path) as src_ref:
+        # Preserve tiling/block metadata from the source raster; rasterio.meta omits it.
+        meta = src_ref.profile.copy()
+        width, height = src_ref.width, src_ref.height
+        nodata_ref = src_ref.nodata if src_ref.nodata is not None else 0
+
+    max_ref_label = _scan_max_label(ref_path, chunk_rows=chunk_rows)
+    print(f"Reference = {ref_path.name}")
     print("Max reference basin ID:", max_ref_label)
 
     maps: list[np.ndarray] = []
-    with rasterio.open(ref_file) as src_ref_global:
+    with rasterio.open(ref_path) as src_ref_global:
         for idx, fpath in enumerate(basin_files):
-            print(f"\nMapping member {idx + 1}/{n_members}: {fpath.name}")
+            print(f"\nMapping member {idx + 1}/{len(basin_files)}: {fpath.name}")
 
-            if idx == ref_index:
+            if ref_index is not None and idx == ref_index and fpath.resolve() == ref_path.resolve():
                 maps.append(np.arange(max_ref_label + 1, dtype=np.int32))
                 continue
 
@@ -168,71 +139,223 @@ def build_ensemble_products(
             maps.append(best_ref)
 
     print("\n✓ Finished building mappings")
+    return maps, {
+        "meta": meta,
+        "width": width,
+        "height": height,
+        "nodata_ref": nodata_ref,
+    }
 
-    meta_i32 = meta.copy()
+
+def _write_products_for_reference(
+    *,
+    basin_files: list[Path],
+    ref_path: Path,
+    maps: list[np.ndarray],
+    meta: dict,
+    chunk_rows: int,
+    out_most_likely: Path,
+    out_cert: Path | None = None,
+    out_bound_prob: Path | None = None,
+) -> None:
+    width = int(meta["width"])
+    height = int(meta["height"])
+    nodata_ref = meta["nodata_ref"]
+    n_members = len(basin_files)
+
+    meta_i32 = meta["meta"].copy()
     meta_i32.update(dtype="int32", nodata=0, count=1, compress="LZW")
-    meta_f32 = meta.copy()
+    meta_f32 = meta["meta"].copy()
     meta_f32.update(dtype="float32", nodata=0.0, count=1, compress="LZW")
 
-    with (
-        rasterio.open(ref_file) as src_ref,
-        rasterio.open(out_most_likely, "w", **meta_i32) as dst_seg,
-        rasterio.open(out_cert, "w", **meta_f32) as dst_cert,
-        rasterio.open(out_bound_prob, "w", **meta_f32) as dst_bprob,
-    ):
-        for row_start in range(0, height, chunk_rows):
-            row_stop = min(row_start + chunk_rows, height)
-            nrows = row_stop - row_start
-            print(f"[Pass] Rows {row_start}–{row_stop - 1}")
+    with rasterio.open(ref_path) as src_ref, rasterio.open(out_most_likely, "w", **meta_i32) as dst_seg:
+        cert_ctx = rasterio.open(out_cert, "w", **meta_f32) if out_cert is not None else None
+        bprob_ctx = rasterio.open(out_bound_prob, "w", **meta_f32) if out_bound_prob is not None else None
+        try:
+            for row_start in range(0, height, chunk_rows):
+                row_stop = min(row_start + chunk_rows, height)
+                nrows = row_stop - row_start
+                print(f"[Pass] Rows {row_start}–{row_stop - 1}")
 
-            window = Window(0, row_start, width, nrows)
-            ref_chunk = src_ref.read(1, window=window).astype(np.int32)
-            domain = (ref_chunk != 0) & (ref_chunk != nodata_ref)
+                window = Window(0, row_start, width, nrows)
+                ref_chunk = src_ref.read(1, window=window).astype(np.int32)
+                domain = (ref_chunk != 0) & (ref_chunk != nodata_ref)
 
-            label_stack = np.zeros((n_members, nrows, width), dtype=np.int32)
-            for i, fpath in enumerate(basin_files):
-                map_r = maps[i]
-                with rasterio.open(fpath) as src_run:
-                    nodata_run = src_run.nodata if src_run.nodata is not None else 0
-                    run_chunk = src_run.read(1, window=window).astype(np.int32)
+                label_stack = np.zeros((n_members, nrows, width), dtype=np.int32)
+                for i, fpath in enumerate(basin_files):
+                    map_r = maps[i]
+                    with rasterio.open(fpath) as src_run:
+                        nodata_run = src_run.nodata if src_run.nodata is not None else 0
+                        run_chunk = src_run.read(1, window=window).astype(np.int32)
 
-                run_chunk[run_chunk == nodata_run] = 0
-                run_chunk[run_chunk < 0] = 0
-                run_chunk[run_chunk >= len(map_r)] = 0
+                    run_chunk[run_chunk == nodata_run] = 0
+                    run_chunk[run_chunk < 0] = 0
+                    run_chunk[run_chunk >= len(map_r)] = 0
 
-                labels_ref = map_r[run_chunk]
-                labels_ref[~domain] = 0
-                label_stack[i] = labels_ref
+                    labels_ref = map_r[run_chunk]
+                    labels_ref[~domain] = 0
+                    label_stack[i] = labels_ref
 
-            stack_flat = label_stack.reshape(n_members, nrows * width)
-            maj_flat, cert_flat = majority_label_and_cert(stack_flat)
+                stack_flat = label_stack.reshape(n_members, nrows * width)
+                maj_flat, cert_flat = majority_label_and_cert(stack_flat)
 
-            seg = maj_flat.reshape(nrows, width)
-            seg[~domain] = 0
-            dst_seg.write(seg.astype(np.int32), 1, window=window)
+                seg = maj_flat.reshape(nrows, width)
+                seg[~domain] = 0
+                dst_seg.write(seg.astype(np.int32), 1, window=window)
 
-            cert = cert_flat.reshape(nrows, width)
-            cert[~domain] = 0.0
-            dst_cert.write(cert.astype(np.float32), 1, window=window)
+                if cert_ctx is not None:
+                    cert = cert_flat.reshape(nrows, width)
+                    cert[~domain] = 0.0
+                    cert_ctx.write(cert.astype(np.float32), 1, window=window)
 
-            valid = label_stack != 0
-            boundaries = np.zeros_like(label_stack, dtype=bool)
+                if bprob_ctx is not None:
+                    valid = label_stack != 0
+                    boundaries = np.zeros_like(label_stack, dtype=bool)
 
-            diff_ns = label_stack[:, 1:, :] != label_stack[:, :-1, :]
-            bd_ns = diff_ns & (valid[:, 1:, :] & valid[:, :-1, :])
-            boundaries[:, 1:, :] |= bd_ns
-            boundaries[:, :-1, :] |= bd_ns
+                    diff_ns = label_stack[:, 1:, :] != label_stack[:, :-1, :]
+                    bd_ns = diff_ns & (valid[:, 1:, :] & valid[:, :-1, :])
+                    boundaries[:, 1:, :] |= bd_ns
+                    boundaries[:, :-1, :] |= bd_ns
 
-            diff_ew = label_stack[:, :, 1:] != label_stack[:, :, :-1]
-            bd_ew = diff_ew & (valid[:, :, 1:] & valid[:, :, :-1])
-            boundaries[:, :, 1:] |= bd_ew
-            boundaries[:, :, :-1] |= bd_ew
+                    diff_ew = label_stack[:, :, 1:] != label_stack[:, :, :-1]
+                    bd_ew = diff_ew & (valid[:, :, 1:] & valid[:, :, :-1])
+                    boundaries[:, :, 1:] |= bd_ew
+                    boundaries[:, :, :-1] |= bd_ew
 
-            bprob = boundaries.sum(axis=0).astype(np.float32) / float(n_members)
-            bprob[~domain] = 0.0
-            dst_bprob.write(bprob, 1, window=window)
+                    bprob = boundaries.sum(axis=0).astype(np.float32) / float(n_members)
+                    bprob[~domain] = 0.0
+                    bprob_ctx.write(bprob, 1, window=window)
+        finally:
+            if cert_ctx is not None:
+                cert_ctx.close()
+            if bprob_ctx is not None:
+                bprob_ctx.close()
+
+
+def build_ensemble_products(
+    ensemble_dir,
+    basin_pattern: str = "basins_hydro_ens_*.tif",
+    ref_index: int = 0,
+    chunk_rows: int = 32,
+    p_stable_pixel: float = 0.90,
+    p_min_div: float = 0.00,
+    reference_mode: str = "iterative",
+    reference_iterations: int = 2,
+    reference_raster: str | Path | None = None,
+    out_most_likely: str | Path | None = None,
+    out_cert: str | Path | None = None,
+    out_uncert: str | Path | None = None,
+    out_bound_prob: str | Path | None = None,
+    out_bound_cert: str | Path | None = None,
+    out_stable_div: str | Path | None = None,
+    out_uncert_div: str | Path | None = None,
+    run_merge: bool = False,
+    merge_dem: str | Path | None = None,
+    merge_res_m: int = 500,
+    merge_min_basin_km2: float = 500.0,
+    merge_do_exclaves: bool = True,
+    merge_max_exclave_iters: int = 6,
+    out_merged: str | Path | None = None,
+):
+    ensemble_dir = Path(ensemble_dir)
+    if reference_raster is not None:
+        reference_raster = Path(reference_raster)
+
+    if out_most_likely is None:
+        out_most_likely = ensemble_dir / "basins_most_likely.tif"
+    if out_cert is None:
+        out_cert = ensemble_dir / "basins_certainty.tif"
+    if out_uncert is None:
+        out_uncert = ensemble_dir / "basins_uncertainty.tif"
+    if out_bound_prob is None:
+        out_bound_prob = ensemble_dir / "basin_boundary_probability.tif"
+    if out_bound_cert is None:
+        out_bound_cert = ensemble_dir / "basin_boundary_certainty.tif"
+    if out_stable_div is None:
+        out_stable_div = ensemble_dir / "basin_stable_divides.tif"
+    if out_uncert_div is None:
+        out_uncert_div = ensemble_dir / "basin_uncertain_divides.tif"
+    if out_merged is None:
+        out_merged = ensemble_dir / "basins_most_likely_merged.tif"
+
+    out_most_likely = Path(out_most_likely)
+    out_cert = Path(out_cert)
+    out_uncert = Path(out_uncert)
+    out_bound_prob = Path(out_bound_prob)
+    out_bound_cert = Path(out_bound_cert)
+    out_stable_div = Path(out_stable_div)
+    out_uncert_div = Path(out_uncert_div)
+    out_merged = Path(out_merged)
+
+    basin_files = sorted(ensemble_dir.glob(basin_pattern))
+    if not basin_files:
+        raise FileNotFoundError(f"No files matching {basin_pattern} in {ensemble_dir}")
+
+    n_members = len(basin_files)
+    if ref_index < 0 or ref_index >= n_members:
+        raise ValueError(f"ref_index must be in [0, {n_members - 1}], got {ref_index}")
+
+    reference_mode = str(reference_mode).lower()
+    if reference_mode not in {"single", "iterative"}:
+        raise ValueError("reference_mode must be 'single' or 'iterative'")
+
+    reference_iterations = max(1, int(reference_iterations))
+    n_rounds = 1 if reference_mode == "single" else reference_iterations
+
+    print(f"Found {n_members} realisations")
+    print(f"Reference mode: {reference_mode}")
+    print(f"Reference iterations: {n_rounds}")
+
+    if reference_raster is not None:
+        if not reference_raster.exists():
+            raise FileNotFoundError(f"External reference raster not found: {reference_raster}")
+        initial_ref_path = reference_raster
+        current_ref_path = reference_raster
+        print(f"Using external reference raster: {reference_raster}")
+    else:
+        initial_ref_path = basin_files[ref_index]
+        current_ref_path = initial_ref_path
+
+    temp_ref_paths: list[Path] = []
+    latest_meta: dict | None = None
+
+    for iter_idx in range(n_rounds):
+        print(f"\n=== Reference iteration {iter_idx + 1}/{n_rounds} ===")
+        maps, latest_meta = _build_label_maps(
+            basin_files=basin_files,
+            ref_path=current_ref_path,
+            ref_index=(
+                ref_index
+                if reference_raster is None and current_ref_path.resolve() == initial_ref_path.resolve()
+                else None
+            ),
+            chunk_rows=chunk_rows,
+        )
+
+        is_final_iter = iter_idx == (n_rounds - 1)
+        iter_out_most_likely = out_most_likely if is_final_iter else ensemble_dir / f"_reference_iter_{iter_idx + 1:02d}.tif"
+        if not is_final_iter:
+            temp_ref_paths.append(iter_out_most_likely)
+
+        _write_products_for_reference(
+            basin_files=basin_files,
+            ref_path=current_ref_path,
+            maps=maps,
+            meta=latest_meta,
+            chunk_rows=chunk_rows,
+            out_most_likely=iter_out_most_likely,
+            out_cert=out_cert if is_final_iter else None,
+            out_bound_prob=out_bound_prob if is_final_iter else None,
+        )
+
+        if not is_final_iter:
+            current_ref_path = iter_out_most_likely
+            print(f"✓ updated iterative reference → {current_ref_path.name}")
 
     print("✓ wrote most-likely, certainty, boundary-probability")
+    if out_bound_cert != out_bound_prob:
+        copyfile(out_bound_prob, out_bound_cert)
+        print(f"✓ wrote boundary-certainty alias: {out_bound_cert.name}")
 
     with rasterio.open(out_cert) as src_c:
         cert = src_c.read(1).astype(np.float32)
@@ -257,6 +380,12 @@ def build_ensemble_products(
         dst.write(stable, 1)
     with rasterio.open(out_uncert_div, "w", **meta_div) as dst:
         dst.write(uncertain, 1)
+
+    for temp_path in temp_ref_paths:
+        try:
+            temp_path.unlink()
+        except FileNotFoundError:
+            pass
 
     print("✓ wrote uncertainty + divide masks")
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import random
 from pathlib import Path
 from typing import Any, Dict, Tuple
@@ -186,9 +187,13 @@ def load_runtime(cfg: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def init_grass(rt: Dict[str, Any]):
-    setup_grass_env(str(rt["grass_cfg"]["gisbase"]))
+    setup_grass_env()
     gs = bc.gs
     mapset_name = f"{rt['grass_cfg'].get('mapset_prefix', 'MC_WORK')}_{rt['res']}m"
+    job_id = os.environ.get("LSB_JOBID")
+    job_index = os.environ.get("LSB_JOBINDEX")
+    if job_id and job_index:
+        mapset_name = f"{mapset_name}_{job_id}_{job_index}"
     start_grass_from_raster(
         rt["DEM"],
         location=str(rt["grass_cfg"].get("location", "dem_loc")),
@@ -197,7 +202,6 @@ def init_grass(rt: Dict[str, Any]):
     )
     for mod in rt["grass_cfg"].get("ensure_addons", []):
         ensure_grass_addon(mod)
-    gs.run_command("g.mapset", flags="c", mapset=mapset_name)
     return gs
 
 
@@ -330,13 +334,24 @@ def ensure_cached_hybrid(
 # -----------------------------------------------------------------------------
 # Main ensemble stage
 # -----------------------------------------------------------------------------
-def run_ensemble_stage(cfg_path: str | Path) -> int:
+def run_ensemble_stage(
+    cfg_path: str | Path,
+    start: int | None = None,
+    end: int | None = None,
+) -> int:
     rt = load_runtime(load_config(cfg_path))
 
-    normalize_existing_outputs(rt["OUT"], rt["start_i"], rt["n_members"])
-    first_missing = first_missing_member(rt["OUT"], rt["start_i"], rt["n_members"])
+    start_i = rt["start_i"] if start is None else int(start)
+    end_i = rt["n_members"] if end is None else int(end)
+    if start_i < rt["start_i"] or start_i > rt["n_members"]:
+        raise ValueError(f"start must be between {rt['start_i']} and {rt['n_members']}")
+    if end_i < start_i or end_i > rt["n_members"]:
+        raise ValueError(f"end must be between {start_i} and {rt['n_members']}")
+
+    normalize_existing_outputs(rt["OUT"], start_i, end_i)
+    first_missing = first_missing_member(rt["OUT"], start_i, end_i)
     if first_missing is None:
-        print(f"✅ All ensemble members {rt['start_i']:03d}–{rt['n_members']:03d} already exist in {rt['OUT']}")
+        print(f"✅ All ensemble members {start_i:03d}–{end_i:03d} already exist in {rt['OUT']}")
         return 0
 
     print(f"→ Resuming from ensemble member {first_missing:03d}")
@@ -344,7 +359,7 @@ def run_ensemble_stage(cfg_path: str | Path) -> int:
     gs = init_grass(rt)
     dem_map, keep_rasters, keep_vectors = import_base_layers(rt)
 
-    for member_idx in range(rt["start_i"], rt["n_members"] + 1):
+    for member_idx in range(start_i, end_i + 1):
         basin_tif = basin_output_path(rt["OUT"], member_idx)
         if basin_tif.exists():
             print(f"✓ Skipping ensemble member {member_idx:03d}: {basin_tif.name} already exists")

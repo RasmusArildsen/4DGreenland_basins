@@ -1,4 +1,8 @@
 numpy>=1.26,<3
 rasterio>=1.3,<2
+pandas>=2.0,<3
+geopandas>=0.14,<2
+shapely>=2.0,<3
+matplotlib>=3.8,<4
 # Python 3.11+ includes tomllib. Keep tomli for older interpreters.
 tomli>=2.0.1; python_version < "3.11"
