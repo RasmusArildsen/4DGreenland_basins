@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 from collections import defaultdict
 from pathlib import Path
 
@@ -249,20 +250,24 @@ def write_products(
 # Main runner
 # ============================================================
 def main():
-    ensemble_dir = Path(
-        "/dtu/space/cryohydro/users/ralor/4DGreenland_basins/data/output/hybrid_100m/merged_members"
+    parser = argparse.ArgumentParser(
+        description="Build simple ensemble products from a fixed reference raster."
     )
-    basin_pattern = "basins_hydro_ens_*.tif"
+    parser.add_argument("ensemble_dir", help="Directory containing ensemble basin rasters.")
+    parser.add_argument("reference_raster", help="Reference basin raster.")
+    parser.add_argument("--basin-pattern", default="basins_hydro_ens_*.tif")
+    parser.add_argument("--chunk-rows", type=int, default=32)
+    args = parser.parse_args()
 
-    reference_raster = Path(
-        "/dtu/space/cryohydro/users/ralor/4DGreenland_basins/data/output/hybrid_100m/merged_members/reference_updated_relabel.tif"
-    )
+    ensemble_dir = Path(args.ensemble_dir)
+    basin_pattern = args.basin_pattern
+    reference_raster = Path(args.reference_raster)
 
     out_most_likely = ensemble_dir / "basins_most_likely.tif"
     out_certainty = ensemble_dir / "basins_certainty.tif"
     out_boundary_probability = ensemble_dir / "basin_boundary_probability.tif"
 
-    chunk_rows = 32
+    chunk_rows = args.chunk_rows
 
     basin_files = sorted(ensemble_dir.glob(basin_pattern))
     if not basin_files:

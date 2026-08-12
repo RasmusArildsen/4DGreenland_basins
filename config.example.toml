@@ -1,6 +1,6 @@
 [run]
-# One target is selected per run. submit_all_targets.sh rewrites these values
-# in a temporary per-job config for all six standard targets.
+# Select one target per run. Use run_all_targets.py to run the six standard
+# target combinations from this same template.
 dem_mode = "surface"       # "surface" | "bed" | "hybrid"
 dem_res_m = 100            # 100 | 500
 n_members = 500
@@ -15,7 +15,7 @@ gisbase = ""
 location = "dem_loc"
 mapset_prefix = "MC_WORK"
 ensure_addons = ["r.stream.extract"]
-gisdbase = "/work3/ralor/grassdata"
+gisdbase = "grassdata"
 
 [hydrology]
 stream_threshold_100m = 5000
@@ -27,32 +27,32 @@ watershed_memory = 600
 watershed_lowmem = true
 
 [inputs]
-# Replace these paths with local/HPC paths to the required input datasets.
-ice_mask = "/path/to/02-PROMICE-2022-IceMask-polygon-v3.gpkg"
+# Replace these paths with the datasets available in your environment.
+ice_mask = "data/input/02-PROMICE-2022-IceMask-polygon-v3.gpkg"
 
-dem_100m = "/path/to/arcticdem_mosaic_100m_v4.1_dem_clipped.tif"
-var_100m = "/path/to/arcticdem_mosaic_100m_v4.1_mad_or_variance.tif"
-bed_100m = "/path/to/bedmachine_100m.tif"
-bed_err_100m = "/path/to/bedmachine_errbed_100m.tif"
+dem_100m = "data/input/arcticdem_mosaic_100m_v4.1_dem_clipped.tif"
+var_100m = "data/input/arcticdem_mosaic_100m_v4.1_mad_or_variance.tif"
+bed_100m = "data/input/bedmachine_100m.tif"
+bed_err_100m = "data/input/bedmachine_errbed_100m.tif"
 bed_err_is_variance_100m = false
 
-dem_500m = "/path/to/arcticdem_500m_dem.tif"
-var_500m = "/path/to/arcticdem_500m_mad_or_variance.tif"
-bed_500m = "/path/to/bedmachine_500m.tif"
-bed_err_500m = "/path/to/bedmachine_errbed_500m.tif"
+dem_500m = "data/input/arcticdem_500m_dem.tif"
+var_500m = "data/input/arcticdem_500m_mad_or_variance.tif"
+bed_500m = "data/input/bedmachine_500m.tif"
+bed_err_500m = "data/input/bedmachine_errbed_500m.tif"
 bed_err_is_variance_500m = false
 
 # Surface-to-bed transition mask used by hybrid routing.
-surf_mask_2000 = "/path/to/Ice_sheet_lake_boundary.tif"
+surf_mask_2000 = "data/input/Ice_sheet_lake_boundary.tif"
 
 [outputs]
-surface_dir_100m = "/work3/ralor/output/surf_100m"
-bed_dir_100m = "/work3/ralor/output/bed_100m"
-hybrid_dir_100m = "/work3/ralor/output/hybrid_100m"
+surface_dir_100m = "outputs/surf_100m"
+bed_dir_100m = "outputs/bed_100m"
+hybrid_dir_100m = "outputs/hybrid_100m"
 
-surface_dir_500m = "/work3/ralor/output/surf_500m"
-bed_dir_500m = "/work3/ralor/output/bed_500m"
-hybrid_dir_500m = "/work3/ralor/output/hybrid_500m"
+surface_dir_500m = "outputs/surf_500m"
+bed_dir_500m = "outputs/bed_500m"
+hybrid_dir_500m = "outputs/hybrid_500m"
 
 save_surface_dem = false
 save_bed_dem = false

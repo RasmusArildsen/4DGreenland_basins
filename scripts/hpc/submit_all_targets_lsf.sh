@@ -9,7 +9,7 @@ set -euo pipefail
 PROJECT_DIR=${PROJECT_DIR:-$(pwd)}
 CODE_DIR=${CODE_DIR:-$PROJECT_DIR}
 CONFIG_TEMPLATE=${CONFIG_TEMPLATE:-config.toml}
-OUTPUT_DIR=${OUTPUT_DIR:-/work3/ralor/output}
+OUTPUT_DIR=${OUTPUT_DIR:-outputs}
 TOTAL_MEMBERS=${TOTAL_MEMBERS:-500}
 MAX_CONCURRENT_MEMBERS=${MAX_CONCURRENT_MEMBERS:-30}
 MEMBER_WALLTIME=${MEMBER_WALLTIME:-48:00}
@@ -57,7 +57,7 @@ submit_target() {
                 -W "$MEMBER_WALLTIME" \
                 -n 1 \
                 -R "rusage[mem=${MEMBER_MEM_MB}]" \
-                < run_members_from_list.sh
+                < scripts/hpc/run_members_from_list_lsf.sh
     )
     echo "$submission"
 
@@ -84,7 +84,7 @@ submit_target() {
             -W "$PRODUCT_WALLTIME" \
             -n 1 \
             -R "rusage[mem=${PRODUCT_MEM_MB}]" \
-            < products_script.sh
+            < scripts/hpc/products_lsf.sh
 }
 
 submit_target surf_100m surface 100

@@ -8,13 +8,15 @@
 
 set -euo pipefail
 
-source ~/miniconda3/etc/profile.d/conda.sh
-conda activate grisbins
+if [ -n "${CONDA_ENV:-}" ]; then
+    source "${CONDA_SH:-$HOME/miniconda3/etc/profile.d/conda.sh}"
+    conda activate "$CONDA_ENV"
+fi
 
-PROJECT_DIR=${PROJECT_DIR:-${LSB_SUBCWD:-/dtu/space/cryohydro/users/ralor/4DGreenland_basins}}
+PROJECT_DIR=${PROJECT_DIR:-${LSB_SUBCWD:-$(pwd)}}
 CODE_DIR=${CODE_DIR:-$PROJECT_DIR}
 CONFIG_TEMPLATE=${CONFIG_TEMPLATE:-config.toml}
-OUTPUT_DIR=${OUTPUT_DIR:-/work3/ralor/output}
+OUTPUT_DIR=${OUTPUT_DIR:-outputs}
 
 : "${TARGET_NAME:?Set TARGET_NAME, e.g. surf_100m}"
 : "${DEM_MODE:?Set DEM_MODE: surface | bed | hybrid}"

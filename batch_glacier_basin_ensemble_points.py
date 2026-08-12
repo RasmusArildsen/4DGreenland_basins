@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import os
 from pathlib import Path
 from collections import Counter
 
@@ -15,15 +16,16 @@ import matplotlib.pyplot as plt
 
 
 # ---------------------------- CONFIG ----------------------------
-MC_DIR = Path(
-    r"/dtu/space/cryohydro/users/ralor/4DGreenland_basins/data/output/hybrid_100m/merged_members"
-)
+MC_DIR = Path(os.environ.get("MC_DIR", "outputs/hybrid_100m/merged_members"))
 BASIN_GLOB = "basins_hydro_ens_*.tif"
 
 MOST_LIKELY_NAME = "basins_most_likely_merged_final.tif"
 
 GLACIER_SHP = Path(
-    r"/dtu/space/cryohydro/users/ralor/4DGreenland_basins/data/input/glaciers/GreenlandGlacierNames_GGNv01_WGS84_updated.shp"
+    os.environ.get(
+        "GLACIER_SHP",
+        "data/input/glaciers/GreenlandGlacierNames_GGNv01_WGS84_updated.shp",
+    )
 )
 
 OUT_DIR = MC_DIR / "glacier_basin_stats"

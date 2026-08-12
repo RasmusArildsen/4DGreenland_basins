@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 from pathlib import Path
 import numpy as np
 import rasterio
@@ -217,13 +218,28 @@ def polygon_conditioned_basins(
     }
 
 
-input_dir = r"/dtu/space/cryohydro/users/ralor/4DGreenland_basins/data/output/hybrid_100m/merged_members/"
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Build probability and area products for basins touching a polygon."
+    )
+    parser.add_argument("mc_dir", help="Directory containing ensemble basin rasters.")
+    parser.add_argument("polygon_path", help="Polygon file used to select touching basins.")
+    parser.add_argument("--basin-pattern", default="basins_hydro_ens*.tif")
+    parser.add_argument("--out-dir", default=None)
+    parser.add_argument("--chunk-rows", type=int, default=256)
+    parser.add_argument("--no-filtered-basins", action="store_true")
+    args = parser.parse_args()
 
-res = polygon_conditioned_basins(
-    mc_dir= input_dir,
-    basin_pattern=r"basins_hydro_ens*.tif",
-    polygon_path= r"/dtu/space/cryohydro/users/ralor/4DGreenland_basins/outlet_basins/outlet_Tasersiaq.shp",   # or .gpkg
-    out_dir=Path(input_dir) / "touchpoly_products",
-    chunk_rows=256,
-    write_filtered_basins=True,
-)
+    polygon_conditioned_basins(
+        mc_dir=args.mc_dir,
+        basin_pattern=args.basin_pattern,
+        polygon_path=args.polygon_path,
+        out_dir=args.out_dir or Path(args.mc_dir) / "touchpoly_products",
+        chunk_rows=args.chunk_rows,
+        write_filtered_basins=not args.no_filtered_basins,
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
