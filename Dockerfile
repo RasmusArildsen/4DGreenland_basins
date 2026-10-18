@@ -18,17 +18,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     proj-data \
     proj-bin \
     libgeos-dev \
-    libspatialindex-dev \
     build-essential \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-COPY requirements.txt ./
-RUN pip3 install --break-system-packages -r requirements.txt
-
 COPY . /app
+RUN pip3 install --break-system-packages .
 
 ENTRYPOINT ["python3", "run_ensemble.py"]
 CMD ["--help"]

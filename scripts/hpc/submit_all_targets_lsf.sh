@@ -1,8 +1,8 @@
 #!/bin/bash
 # Submit the full 4DGreenland basin production workflow to LSF.
 #
-# The script launches one member array for each target and then submits a
-# dependent products job for that target.
+# Each array task creates and merges one member at the configured minimum. The dependent job
+# matches those merged members to Version_0 and writes intermediate products.
 
 set -euo pipefail
 
@@ -49,14 +49,13 @@ submit_target() {
             DEM_MODE="$mode" \
             DEM_RES_M="$res" \
             MEMBER_LIST="$member_list" \
-            TOTAL_MEMBERS="$TOTAL_MEMBERS" \
             bsub \
                 -J "${member_job_name}[1-${TOTAL_MEMBERS}]%${MAX_CONCURRENT_MEMBERS}" \
                 -oo "logs/${target}_members_%J_%I.out" \
                 -eo "logs/${target}_members_%J_%I.err" \
                 -W "$MEMBER_WALLTIME" \
                 -n 1 \
-                -R "rusage[mem=${MEMBER_MEM_MB}]" \
+                -R "select[tmpssd] rusage[mem=${MEMBER_MEM_MB}]" \
                 < scripts/hpc/run_members_from_list_lsf.sh
     )
     echo "$submission"

@@ -6,7 +6,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-
 TARGETS: dict[str, tuple[str, int]] = {
     "surf_100m": ("surface", 100),
     "bed_100m": ("bed", 100),

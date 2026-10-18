@@ -1,23 +1,13 @@
+"""Generate raw basin members for one routing mode and resolution."""
+
 from __future__ import annotations
 
 import os
 import random
 from pathlib import Path
-from typing import Any, Dict, Tuple
+from typing import Any
 
 import basin_core as bc
-from basin_core import (
-    build_bed_mode_dem,
-    build_hybrid_mode_dem,
-    ensure_grass_addon,
-    export_geotiff,
-    import_raster_native,
-    prepare_dem_and_mask,
-    run_hydro_for_dem,
-    setup_grass_env,
-    start_grass_from_raster,
-)
-from ensemble_postprocess import make_perturbed_bed_member, make_perturbed_surface_member
 
 try:
     import tomllib
@@ -25,418 +15,271 @@ except ModuleNotFoundError:
     import tomli as tomllib
 
 
-# -----------------------------------------------------------------------------
-# Config helpers
-# -----------------------------------------------------------------------------
-def load_config(path: str | Path) -> Dict[str, Any]:
+## Read and validate the small TOML configuration.
+def load_config(path: str | Path) -> dict[str, Any]:
     path = Path(path)
-    if not path.exists():
+    if not path.is_file():
         raise FileNotFoundError(f"Config not found: {path}")
-    with path.open("rb") as f:
-        return tomllib.load(f)
+    with path.open("rb") as handle:
+        return tomllib.load(handle)
 
 
-def must(cfg: Dict[str, Any], *keys: str):
-    value: Any = cfg
-    for key in keys:
-        if not isinstance(value, dict) or key not in value:
-            raise KeyError(f"Missing config key: {'.'.join(keys)}")
-        value = value[key]
-    return value
+def _required(config: dict[str, Any], section: str, key: str) -> Any:
+    try:
+        return config[section][key]
+    except KeyError as error:
+        raise KeyError(f"Missing config key: {section}.{key}") from error
 
 
-def pick_by_res(cfg: Dict[str, Any], base_key: str, res: int) -> Any:
-    section, key = base_key.split(".", 1)
-    return must(cfg, section, f"{key}_{res}m")
-
-
-def output_dirs(cfg: Dict[str, Any], res: int) -> Tuple[Path, Path, Path]:
-    out = must(cfg, "outputs")
-    surface_dir = Path(out[f"surface_dir_{res}m"])
-    bed_dir = Path(out[f"bed_dir_{res}m"])
-    hybrid_dir = Path(out[f"hybrid_dir_{res}m"])
-    for path in (surface_dir, bed_dir, hybrid_dir):
-        path.mkdir(parents=True, exist_ok=True)
-    return surface_dir, bed_dir, hybrid_dir
-
-
-def stream_threshold(cfg: Dict[str, Any], res: int) -> int:
-    return int(must(cfg, "hydrology", f"stream_threshold_{res}m"))
-
-
-def corr_pix(cfg: Dict[str, Any], res: int) -> int:
-    return int(must(cfg, "hydrology", f"corr_pix_{res}m"))
-
-
-# -----------------------------------------------------------------------------
-# Path helpers
-# -----------------------------------------------------------------------------
-def basin_output_path(out_dir: Path, member_idx: int) -> Path:
-    return out_dir / f"basins_hydro_ens_{member_idx:03d}.tif"
-
-
-def stream_output_path(out_dir: Path, member_idx: int) -> Path:
-    return out_dir / f"streams_hydro_ens_{member_idx:03d}.tif"
-
-
-def flowdir_output_path(out_dir: Path, member_idx: int) -> Path:
-    return out_dir / f"flowdir_hydro_ens_{member_idx:03d}.tif"
-
-
-def rename_member_outputs_to_ensemble(out_dir: Path, member_idx: int) -> None:
-    pairs = [
-        (out_dir / f"basins_hydro_mc_{member_idx:03d}.tif", basin_output_path(out_dir, member_idx)),
-        (out_dir / f"streams_hydro_mc_{member_idx:03d}.tif", stream_output_path(out_dir, member_idx)),
-        (out_dir / f"flowdir_hydro_mc_{member_idx:03d}.tif", flowdir_output_path(out_dir, member_idx)),
-    ]
-    for src, dst in pairs:
-        if src.exists() and not dst.exists():
-            src.rename(dst)
-
-
-def normalize_existing_outputs(out_dir: Path, start_i: int, end_i: int) -> None:
-    for member_idx in range(start_i, end_i + 1):
-        rename_member_outputs_to_ensemble(out_dir, member_idx)
-
-
-def first_missing_member(out_dir: Path, start_i: int, end_i: int) -> int | None:
-    for member_idx in range(start_i, end_i + 1):
-        if not basin_output_path(out_dir, member_idx).exists():
-            return member_idx
-    return None
-
-
-# -----------------------------------------------------------------------------
-# Small GRASS/session helpers
-# -----------------------------------------------------------------------------
-def list_maps(gs, map_type: str) -> set[str]:
-    txt = gs.read_command("g.list", type=map_type, separator="newline")
-    return {line.strip() for line in txt.splitlines() if line.strip()}
-
-
-def remove_maps(gs, map_type: str, names: list[str]) -> None:
-    if names:
-        gs.run_command("g.remove", flags="f", type=map_type, name=",".join(names))
-
-
-def load_runtime(cfg: Dict[str, Any]) -> Dict[str, Any]:
-    run_cfg = must(cfg, "run")
-    grass_cfg = must(cfg, "grass")
-    hyd_cfg = must(cfg, "hydrology")
-    in_cfg = must(cfg, "inputs")
-    out_cfg = must(cfg, "outputs")
-
-    dem_mode = str(run_cfg["dem_mode"]).lower()
-    res = int(run_cfg["dem_res_m"])
-    n_members = int(run_cfg.get("n_members", run_cfg.get("n_mc", 0)))
-    start_i = int(run_cfg.get("start_i", 1))
-    seed_base = int(run_cfg.get("seed_base", 0))
-    k_min = float(run_cfg.get("k_min", 1.0))
-    k_max = float(run_cfg.get("k_max", 1.0))
-
-    if dem_mode not in ("surface", "bed", "hybrid"):
-        raise ValueError("run.dem_mode must be one of: surface | bed | hybrid")
-    if res not in (100, 500):
+## Read only the target settings needed by postprocessing.
+def load_target(config: dict[str, Any]) -> dict[str, Any]:
+    run = config["run"]
+    mode = str(run["dem_mode"]).lower()
+    resolution = int(run["dem_res_m"])
+    n_members = int(run["n_members"])
+    if mode not in {"surface", "bed", "hybrid"}:
+        raise ValueError("run.dem_mode must be surface, bed, or hybrid")
+    if resolution not in {100, 500}:
         raise ValueError("run.dem_res_m must be 100 or 500")
     if n_members < 1:
-        raise ValueError("run.n_members must be >= 1")
-    if start_i < 1 or start_i > n_members:
-        raise ValueError("run.start_i must be between 1 and n_members")
+        raise ValueError("run.n_members must be positive")
 
-    dem = str(pick_by_res(cfg, "inputs.dem", res))
-    var = str(pick_by_res(cfg, "inputs.var", res))
-    bed = str(pick_by_res(cfg, "inputs.bed", res))
-    bed_err = str(pick_by_res(cfg, "inputs.bed_err", res))
-    bed_err_is_var = bool(in_cfg.get(f"bed_err_is_variance_{res}m", False))
-    ice_mask = str(in_cfg["ice_mask"])
-    surf_2000 = str(in_cfg["surf_mask_2000"])
-
-    out_surf, out_bed, out_hyb = output_dirs(cfg, res)
-    out_dir = out_surf if dem_mode == "surface" else out_bed if dem_mode == "bed" else out_hyb
-
+    output = Path(_required(config, "outputs", f"{mode}_dir_{resolution}m"))
     return {
-        "cfg": cfg,
-        "dem_mode": dem_mode,
-        "res": res,
+        "dem_mode": mode,
+        "res": resolution,
         "n_members": n_members,
-        "start_i": start_i,
-        "seed_base": seed_base,
-        "k_min": k_min,
-        "k_max": k_max,
-        "DEM": dem,
-        "VAR": var,
-        "BED": bed,
-        "BED_ERR": bed_err,
-        "BED_ERR_IS_VAR": bed_err_is_var,
-        "ICE_MASK": ice_mask,
-        "SURF_2000": surf_2000,
-        "OUT_SURF": out_surf,
-        "OUT_BED": out_bed,
-        "OUT_HYB": out_hyb,
-        "OUT": out_dir,
-        "STREAM_THRESH": stream_threshold(cfg, res),
-        "CORR_PIX": corr_pix(cfg, res),
-        "DO_FILL_DIR": bool(hyd_cfg.get("do_fill_dir", True)),
-        "WS_MEM": int(hyd_cfg.get("watershed_memory", 600)),
-        "WS_LOWMEM": bool(hyd_cfg.get("watershed_lowmem", True)),
-        "SAVE_SURF": bool(out_cfg.get("save_surface_dem", True)),
-        "SAVE_BED": bool(out_cfg.get("save_bed_dem", True)),
-        "SAVE_PHI_OR_HYBRID": bool(out_cfg.get("save_phi_or_hybrid_dem", True)),
-        "grass_cfg": grass_cfg,
+        "OUT": output,
     }
 
 
-def init_grass(rt: Dict[str, Any]):
-    setup_grass_env()
-    gs = bc.gs
-    mapset_name = f"{rt['grass_cfg'].get('mapset_prefix', 'MC_WORK')}_{rt['res']}m"
-    job_id = os.environ.get("LSB_JOBID")
-    job_index = os.environ.get("LSB_JOBINDEX")
-    if job_id and job_index:
-        mapset_name = f"{mapset_name}_{job_id}_{job_index}"
-    start_grass_from_raster(
-        rt["DEM"],
-        location=str(rt["grass_cfg"].get("location", "dem_loc")),
-        mapset=mapset_name,
-        gisdbase=rt["grass_cfg"].get("gisdbase"),
+def load_runtime(config: dict[str, Any]) -> dict[str, Any]:
+    target = load_target(config)
+    run = config["run"]
+    mode = target["dem_mode"]
+    resolution = target["res"]
+    output = target["OUT"]
+    output.mkdir(parents=True, exist_ok=True)
+    inputs = config["inputs"]
+    hydrology = config["hydrology"]
+
+    runtime = {
+        **target,
+        "cfg": config,
+        "seed_base": int(run.get("seed_base", 0)),
+        "k_min": float(run.get("k_min", 1.0)),
+        "k_max": float(run.get("k_max", 1.0)),
+        "DEM": str(inputs[f"dem_{resolution}m"]),
+        "VAR": str(inputs[f"var_{resolution}m"]),
+        "ICE_MASK": str(inputs["ice_mask"]),
+        "OUT": output,
+        "STREAM_THRESH": int(hydrology[f"stream_threshold_{resolution}m"]),
+        "CORR_PIX": int(hydrology[f"corr_pix_{resolution}m"]),
+        "DO_FILL_DIR": bool(hydrology.get("do_fill_dir", True)),
+        "WS_MEM": int(hydrology.get("watershed_memory", 600)),
+        "WS_LOWMEM": bool(hydrology.get("watershed_lowmem", True)),
+        "SAVE_MEMBER_DIAGNOSTICS": bool(
+            config["outputs"].get("save_member_diagnostics", False)
+        ),
+        "grass_cfg": config["grass"],
+    }
+    if mode in {"bed", "hybrid"}:
+        runtime.update(
+            BED=str(inputs[f"bed_{resolution}m"]),
+            BED_ERR=str(inputs[f"bed_err_{resolution}m"]),
+            BED_ERR_IS_VAR=bool(inputs.get(f"bed_err_is_variance_{resolution}m", False)),
+        )
+    if mode == "hybrid":
+        runtime["SURF_2000"] = str(inputs["surf_mask_2000"])
+    return runtime
+
+
+## Start one isolated GRASS mapset for the local process or HPC array task.
+def init_grass(runtime: dict[str, Any]):
+    bc.setup_grass_env()
+    job_suffix = "_".join(
+        value
+        for value in (os.environ.get("LSB_JOBID"), os.environ.get("LSB_JOBINDEX"))
+        if value
     )
-    for mod in rt["grass_cfg"].get("ensure_addons", []):
-        ensure_grass_addon(mod)
-    return gs
-
-
-def import_base_layers(rt: Dict[str, Any]):
-    dem_map, ice_mask_rast = prepare_dem_and_mask(rt["DEM"], rt["ICE_MASK"])
-    import_raster_native(rt["VAR"], out_name="dem_var")
-    import_raster_native(rt["BED"], out_name="bed_raster")
-    import_raster_native(rt["BED_ERR"], out_name="bed_err")
-    import_raster_native(rt["SURF_2000"], out_name="surf_mask_2000")
-    keep_rasters = {dem_map, "dem_var", ice_mask_rast, "MASK", "bed_raster", "bed_err", "surf_mask_2000"}
-    keep_vectors = {"ice_mask_vec"}
-    return dem_map, keep_rasters, keep_vectors
-
-
-# -----------------------------------------------------------------------------
-# Caching helpers
-# -----------------------------------------------------------------------------
-def ensure_cached_surface(
-    *, member_idx: int, base_dem: str, var_map: str, corr_pix_val: int, cache_dir: Path, save: bool = True
-) -> str:
-    name = f"dem_mc_{member_idx:03d}"
-    tif = cache_dir / f"{name}.tif"
-    if tif.exists():
-        print(f"✓ Using cached surface DEM: {tif.name}")
-        import_raster_native(str(tif), out_name=name)
-        return name
-
-    print(f"→ Creating surface DEM perturbation: {name}")
-    dem_member = make_perturbed_surface_member(
-        member_idx=member_idx,
-        base_dem=base_dem,
-        var_map=var_map,
-        corr_pix=corr_pix_val,
+    mapset = f"{runtime['grass_cfg'].get('mapset_prefix', 'MC_WORK')}_{runtime['res']}m"
+    if job_suffix:
+        mapset = f"{mapset}_{job_suffix}"
+    bc.start_grass_from_raster(
+        runtime["DEM"],
+        location=str(runtime["grass_cfg"].get("location", "dem_loc")),
+        mapset=mapset,
+        gisdbase=runtime["grass_cfg"].get("gisdbase"),
     )
-    if save:
-        print(f"💾 Caching surface DEM → {tif}")
-        export_geotiff(dem_member, tif, gdal_type="Float64", force=True)
-    return dem_member
+    for module in runtime["grass_cfg"].get("ensure_addons", []):
+        bc.ensure_grass_addon(module)
+    return bc.gs
 
 
-def ensure_cached_bed(
-    *,
-    member_idx: int,
-    base_bed: str,
-    err_map: str,
-    corr_pix_val: int,
-    err_is_variance: bool,
-    cache_dir: Path,
-    save: bool = True,
+## Import only the inputs required by the selected routing mode.
+def _import_inputs(runtime: dict[str, Any]) -> tuple[str, set[str], set[str]]:
+    dem, mask = bc.prepare_dem_and_mask(runtime["DEM"], runtime["ICE_MASK"])
+    bc.import_raster_native(runtime["VAR"], "dem_var")
+    rasters = {dem, "dem_var", mask, "MASK"}
+    if runtime["dem_mode"] in {"bed", "hybrid"}:
+        bc.import_raster_native(runtime["BED"], "bed_raster")
+        bc.import_raster_native(runtime["BED_ERR"], "bed_err")
+        rasters |= {"bed_raster", "bed_err"}
+    if runtime["dem_mode"] == "hybrid":
+        bc.import_raster_native(runtime["SURF_2000"], "surf_mask_2000")
+        rasters.add("surf_mask_2000")
+    return dem, rasters, {"ice_mask_vec"}
+
+
+## Make a spatially correlated random-error field.
+def _noise(
+    member: int,
+    base: str,
+    correlation_pixels: int,
+    name: str,
+    seed: int,
 ) -> str:
-    name = f"bed_mc_{member_idx:03d}"
-    tif = cache_dir / f"{name}.tif"
-    if tif.exists():
-        print(f"✓ Using cached bed DEM: {tif.name}")
-        import_raster_native(str(tif), out_name=name)
-        return name
-
-    print(f"→ Creating bed DEM perturbation: {name}")
-    bed_member, _ = make_perturbed_bed_member(
-        member_idx=member_idx,
-        base_bed=base_bed,
-        err_map=err_map,
-        corr_pix=corr_pix_val,
-        err_is_variance=err_is_variance,
+    bc.gs.run_command("r.mask", flags="r", errors="status")
+    bc.gs.run_command("g.region", raster=base)
+    raw = f"noise_raw_{name}_{member:03d}"
+    output = f"noise_{name}_{member:03d}"
+    bc.gs.run_command(
+        "r.surf.gauss",
+        output=raw,
+        mean=0.0,
+        sigma=1.0,
+        seed=seed,
+        overwrite=True,
     )
-    if save:
-        print(f"💾 Caching bed DEM → {tif}")
-        export_geotiff(bed_member, tif, gdal_type="Float64", force=True)
-    return bed_member
+    cellsize = float(bc.gs.parse_command("g.region", flags="g")["ewres"])
+    bc.gs.run_command(
+        "r.resamp.filter",
+        input=raw,
+        output=output,
+        filter="gauss,box",
+        radius=f"{correlation_pixels * cellsize},{2 * correlation_pixels * cellsize}",
+        overwrite=True,
+    )
+    return output
 
 
-def ensure_cached_phi(
-    *, member_idx: int, bed_member: str, surface_member: str, k_i: float, cache_dir: Path, save: bool = True
+def _surface_member(
+    member: int,
+    base: str,
+    variance: str,
+    correlation: int,
+    seed: int,
 ) -> str:
-    tag = f"_{member_idx:03d}"
-    name = f"hyd_pot{tag}"
-    tif = cache_dir / f"phi_ens_{member_idx:03d}.tif"
-    if tif.exists():
-        print(f"✓ Using cached phi: {tif.name}")
-        import_raster_native(str(tif), out_name=name)
-        return name
+    noise = _noise(member, base, correlation, "surface", seed)
+    output = f"surface_{member:03d}"
+    bc.safe(
+        f"{output} = if(isnull({base}) || isnull({variance}), null(), "
+        f"{base} + {noise} * sqrt({variance}))"
+    )
+    return output
 
-    print(f"→ Creating phi: {name}")
-    phi = build_bed_mode_dem(
-        bed_dem=bed_member,
-        surface_dem=surface_member,
+
+def _bed_member(
+    member: int,
+    base: str,
+    error: str,
+    correlation: int,
+    error_is_variance: bool,
+    seed: int,
+) -> str:
+    noise = _noise(member, base, correlation, "bed", seed)
+    scale = f"sqrt({error})" if error_is_variance else error
+    output = f"bed_{member:03d}"
+    bc.safe(
+        f"{output} = if(isnull({base}) || isnull({error}), null(), "
+        f"{base} + {noise} * ({scale}))"
+    )
+    return output
+
+
+## Build the surface, hydraulic-potential, or hybrid routing raster.
+def _routing_raster(runtime: dict[str, Any], member: int, k: float, base_dem: str) -> str:
+    seed = runtime["seed_base"] + 2 * member
+    surface = _surface_member(member, base_dem, "dem_var", runtime["CORR_PIX"], seed)
+    if runtime["dem_mode"] == "surface":
+        return surface
+
+    bed = _bed_member(
+        member,
+        "bed_raster",
+        "bed_err",
+        runtime["CORR_PIX"],
+        runtime["BED_ERR_IS_VAR"],
+        seed + 1,
+    )
+    tag = f"_{member:03d}"
+    if runtime["dem_mode"] == "bed":
+        return bc.build_bed_mode_dem(bed_dem=bed, surface_dem=surface, tag=tag, k=k)
+    return bc.build_hybrid_mode_dem(
+        surface_dem=surface,
+        bed_dem=bed,
+        inside_mask_raster="surf_mask_2000",
         tag=tag,
-        surface_smooth_size=3,
-        k=k_i,
+        k=k,
     )
-    if save:
-        print(f"💾 Caching phi → {tif}")
-        export_geotiff(phi, tif, gdal_type="Float64", force=True)
-    return phi
 
 
-def ensure_cached_hybrid(
-    *,
-    member_idx: int,
-    bed_member: str,
-    surface_member: str,
-    k_i: float,
-    inside_mask_raster: str,
-    cache_dir: Path,
-    save: bool = True,
-) -> str:
-    tag = f"_{member_idx:03d}"
-    name = f"hybrid_dem{tag}"
-    tif = cache_dir / f"hybrid_ens_{member_idx:03d}.tif"
-    if tif.exists():
-        print(f"✓ Using cached hybrid: {tif.name}")
-        import_raster_native(str(tif), out_name=name)
-        return name
-
-    print(f"→ Creating hybrid: {name}")
-    hyb = build_hybrid_mode_dem(
-        surface_dem=surface_member,
-        bed_dem=bed_member,
-        inside_mask_raster=inside_mask_raster,
-        tag=tag,
-        surface_smooth_size_for_phi=3,
-        k=k_i,
-    )
-    if save:
-        print(f"💾 Caching hybrid → {tif}")
-        export_geotiff(hyb, tif, gdal_type="Float64", force=True)
-    return hyb
+def _maps(map_type: str) -> set[str]:
+    listing = bc.gs.read_command("g.list", type=map_type, separator="newline")
+    return {name.strip() for name in listing.splitlines() if name.strip()}
 
 
-# -----------------------------------------------------------------------------
-# Main ensemble stage
-# -----------------------------------------------------------------------------
+def _remove_new_maps(before: set[str], keep: set[str], map_type: str) -> None:
+    names = sorted((_maps(map_type) - before) - keep)
+    if names:
+        bc.gs.run_command("g.remove", flags="f", type=map_type, name=",".join(names))
+
+
+## Public entry point: create every missing raw member in the requested range.
 def run_ensemble_stage(
-    cfg_path: str | Path,
+    config_path: str | Path,
     start: int | None = None,
     end: int | None = None,
 ) -> int:
-    rt = load_runtime(load_config(cfg_path))
+    runtime = load_runtime(load_config(config_path))
+    first = 1 if start is None else int(start)
+    last = runtime["n_members"] if end is None else int(end)
+    if not 1 <= first <= last <= runtime["n_members"]:
+        raise ValueError(f"Member range must be within 1..{runtime['n_members']}")
 
-    start_i = rt["start_i"] if start is None else int(start)
-    end_i = rt["n_members"] if end is None else int(end)
-    if start_i < rt["start_i"] or start_i > rt["n_members"]:
-        raise ValueError(f"start must be between {rt['start_i']} and {rt['n_members']}")
-    if end_i < start_i or end_i > rt["n_members"]:
-        raise ValueError(f"end must be between {start_i} and {rt['n_members']}")
-
-    normalize_existing_outputs(rt["OUT"], start_i, end_i)
-    first_missing = first_missing_member(rt["OUT"], start_i, end_i)
-    if first_missing is None:
-        print(f"✅ All ensemble members {start_i:03d}–{end_i:03d} already exist in {rt['OUT']}")
+    wanted = range(first, last + 1)
+    missing = [
+        member
+        for member in wanted
+        if not (runtime["OUT"] / f"basins_hydro_ens_{member:03d}.tif").exists()
+    ]
+    if not missing:
+        print(f"INFO: Members {first:03d}-{last:03d} already exist in {runtime['OUT']}")
         return 0
 
-    print(f"→ Resuming from ensemble member {first_missing:03d}")
-
-    gs = init_grass(rt)
-    dem_map, keep_rasters, keep_vectors = import_base_layers(rt)
-
-    for member_idx in range(start_i, end_i + 1):
-        basin_tif = basin_output_path(rt["OUT"], member_idx)
-        if basin_tif.exists():
-            print(f"✓ Skipping ensemble member {member_idx:03d}: {basin_tif.name} already exists")
-            continue
-
-        print(
-            f"\n==================== ENS {member_idx:03d}/{rt['n_members']} "
-            f"({rt['dem_mode']}, {rt['res']}m) ===================="
+    init_grass(runtime)
+    base_dem, keep_rasters, keep_vectors = _import_inputs(runtime)
+    for member in missing:
+        print(f"\nMember {member:03d}/{runtime['n_members']} ({runtime['dem_mode']}, {runtime['res']}m)")
+        k = random.Random(runtime["seed_base"] + member).uniform(
+            runtime["k_min"], runtime["k_max"]
         )
-        rng = random.Random(rt["seed_base"] + member_idx)
-        k_i = rng.uniform(rt["k_min"], rt["k_max"])
-        print(f"→ k (sliding factor) = {k_i:.3f}")
-
-        ras_before = list_maps(gs, "raster")
-        vec_before = list_maps(gs, "vector")
-
-        surface_member = ensure_cached_surface(
-            member_idx=member_idx,
-            base_dem=dem_map,
-            var_map="dem_var",
-            corr_pix_val=rt["CORR_PIX"],
-            cache_dir=rt["OUT_SURF"],
-            save=rt["SAVE_SURF"],
+        print(f"INFO: Sliding factor k = {k:.3f}")
+        raster_before = _maps("raster")
+        vector_before = _maps("vector")
+        routing = _routing_raster(runtime, member, k, base_dem)
+        bc.run_hydro_for_dem(
+            hydro_dem=routing,
+            out_dir=str(runtime["OUT"]),
+            stream_threshold=runtime["STREAM_THRESH"],
+            run_idx=member,
+            watershed_memory=runtime["WS_MEM"],
+            watershed_lowmem=runtime["WS_LOWMEM"],
+            do_fill_dir=runtime["DO_FILL_DIR"],
+            export_diagnostics=runtime["SAVE_MEMBER_DIAGNOSTICS"],
         )
+        _remove_new_maps(raster_before, keep_rasters, "raster")
+        _remove_new_maps(vector_before, keep_vectors, "vector")
 
-        bed_member = None
-        if rt["dem_mode"] in ("bed", "hybrid"):
-            bed_member = ensure_cached_bed(
-                member_idx=member_idx,
-                base_bed="bed_raster",
-                err_map="bed_err",
-                corr_pix_val=rt["CORR_PIX"],
-                err_is_variance=rt["BED_ERR_IS_VAR"],
-                cache_dir=rt["OUT_BED"],
-                save=rt["SAVE_BED"],
-            )
-
-        if rt["dem_mode"] == "surface":
-            hydro_dem = surface_member
-        elif rt["dem_mode"] == "bed":
-            assert bed_member is not None
-            hydro_dem = ensure_cached_phi(
-                member_idx=member_idx,
-                bed_member=bed_member,
-                surface_member=surface_member,
-                k_i=k_i,
-                cache_dir=rt["OUT_BED"],
-                save=rt["SAVE_PHI_OR_HYBRID"],
-            )
-        else:
-            assert bed_member is not None
-            hydro_dem = ensure_cached_hybrid(
-                member_idx=member_idx,
-                bed_member=bed_member,
-                surface_member=surface_member,
-                k_i=k_i,
-                inside_mask_raster="surf_mask_2000",
-                cache_dir=rt["OUT_HYB"],
-                save=rt["SAVE_PHI_OR_HYBRID"],
-            )
-
-        run_hydro_for_dem(
-            dem_name=hydro_dem,
-            out_dir=str(rt["OUT"]),
-            stream_threshold=rt["STREAM_THRESH"],
-            run_idx=member_idx,
-            watershed_memory=rt["WS_MEM"],
-            watershed_lowmem=rt["WS_LOWMEM"],
-            do_fill_dir=rt["DO_FILL_DIR"],
-            extra_exports=None,
-        )
-        rename_member_outputs_to_ensemble(rt["OUT"], member_idx)
-
-        ras_after = list_maps(gs, "raster")
-        vec_after = list_maps(gs, "vector")
-        remove_maps(gs, "raster", sorted((ras_after - ras_before) - keep_rasters))
-        remove_maps(gs, "vector", sorted((vec_after - vec_before) - keep_vectors))
-
-    print("\n✅ Ensemble stage done.")
+    print("\nEnsemble stage complete.")
     return 0
