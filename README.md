@@ -9,10 +9,10 @@ resolutions:
 - bed/subglacial routing at 100 m and 500 m
 - hybrid surface-to-bed routing at 100 m and 500 m
 
-For each target, the workflow can run an ensemble of basin members, merge each
-member with a basin-cleanup algorithm, and derive final ensemble products such
-as most-likely basins, basin certainty, boundary certainty, and stable divide
-masks.
+For each target, the workflow creates an ensemble of basin members, merges small
+basins in each member, and calculates basin membership probabilities. The
+delivered basin geometry is reviewed separately and remains fixed when its
+probabilities are calculated.
 
 The repository is designed as a general Python/GRASS GIS workflow. It can be
 run on a laptop, workstation, server, container, or scheduler-managed cluster as
@@ -26,14 +26,16 @@ Core workflow:
 - `run_all_targets.py` - convenience runner for the six standard targets
 - `ensemble_runner.py` - creates ensemble members and supports resumable runs
 - `ensemble_merge.py` - merges and cleans individual ensemble basin members
-- `ensemble_products.py` - orchestrates final product generation
-- `ensemble_postprocess.py` - builds ensemble products from member rasters
+- `reference.py` - validates the merged Version 0 reference and member rasters
+- `ensemble_products.py` - creates Version 0-based intermediate products
+- `final_delivery.py` - calculates products for an approved final basin map
+- `outlet_analysis.py` - analyses basin-area variation at a selected outlet
 - `basin_core.py` - GRASS GIS hydrology and basin-merging utilities
 
 Configuration:
 
 - `config.example.toml` - portable template; copy to `config.toml` and edit paths
-- `requirements.txt` - Python package requirements outside GRASS/GDAL
+- `pyproject.toml` - Python dependencies, package metadata, and test settings
 
 Optional scheduler examples:
 
@@ -67,25 +69,46 @@ outputs/
   hybrid_500m/
 ```
 
-Each target contains raw ensemble rasters. Member-merged rasters and final
-products live under:
+Each target contains raw ensemble rasters. The member-merged rasters live under:
 
 ```text
 <target>/merged_members/
 ```
 
+The approved final delivery is kept in a separate folder, for example
+`Ensemble_products/100m/surf/`.
+
 ## Final Products
 
-The `products` stage writes these rasters from the ensemble members, or from
-the merged members when `postprocess.merge_strategy = "member"`:
+The `products` stage writes intermediate, Version 0-based results. Once a final
+basin raster and vector have been approved, `final-delivery` uses all merged
+members (500 for the completed products) to write the delivered files. For a
+target named `surf_100m`, these are:
 
-- `basins_most_likely.tif` - consensus basin labels
-- `basins_certainty.tif` - fraction of members supporting each most-likely label
-- `basins_uncertainty.tif` - `1 - basins_certainty`
-- `basin_boundary_probability.tif` - fraction of members with a basin boundary
-- `basin_boundary_certainty.tif` - alias of boundary probability for downstream naming
-- `basin_stable_divides.tif` - boundary pixels above the stable threshold
-- `basin_uncertain_divides.tif` - boundary pixels below the stable threshold
+- `basins_surf_100m.tif` and `.gpkg` - the approved raster and vector basin IDs
+- `basin_certainty_surf_100m.tif` - fraction of members supporting each pixel's assigned final basin ID
+- `boundary_probability_surf_100m.tif` - fraction of members with a basin divide at each pixel
+- `basin_membership_probabilities_surf_100m.tif` - one probability band per final basin ID
+- `Individual_basin_probabilities/*.tif` - single-band copies of those layers
+
+Each merged member basin is assigned as a whole to the final basin with which it
+has the largest area overlap. Final-basin certainty can therefore be lower than
+another basin's probability at a pixel. No uncertainty-complement raster or
+stable/uncertain divide masks are included in the final delivery. The multiband
+GeoTIFF and GeoPackage can be opened in QGIS.
+
+Use the final geometry for the selected target; the destination must not exist:
+
+```bash
+python run_ensemble.py final-delivery config.toml \
+  /path/to/approved/basins_surf_100m.tif \
+  /path/to/approved/basins_surf_100m.gpkg \
+  /path/to/delivery/Ensemble_products/100m/surf
+
+python run_ensemble.py extract-individual \
+  /path/to/delivery/Ensemble_products/100m/surf/basin_membership_probabilities_surf_100m.tif \
+  /path/to/delivery/Ensemble_products/100m/surf/Individual_basin_probabilities
+```
 
 ## Quick Start
 
@@ -102,7 +125,7 @@ your machine. The example config uses relative paths such as `data/input/...`,
 Install Python dependencies into your environment:
 
 ```bash
-python -m pip install -r requirements.txt
+python -m pip install -e .
 ```
 
 GRASS GIS, GDAL, and the GRASS addon `r.stream.extract` must also be available
@@ -127,7 +150,7 @@ python run_ensemble.py merge config.toml
 python run_ensemble.py products config.toml
 ```
 
-Or run the full workflow for the selected target:
+Or run those three stages for the selected target:
 
 ```bash
 python run_ensemble.py all config.toml
@@ -165,15 +188,15 @@ python run_all_targets.py --config config.toml --dry-run
 Run one member:
 
 ```bash
-python run_ensemble.py ensemble-single config.toml 42
-python run_ensemble.py single config.toml 42
+python run_ensemble.py ensemble config.toml 42
+python run_ensemble.py merge config.toml 42
 ```
 
 Run a member range:
 
 ```bash
-python run_ensemble.py ensemble-range config.toml 1 50
-python run_ensemble.py range config.toml 1 50
+python run_ensemble.py ensemble config.toml 1 50
+python run_ensemble.py merge config.toml 1 50
 ```
 
 ## Resume Behavior
@@ -184,8 +207,8 @@ The ensemble stage skips members whose final basin raster already exists:
 basins_hydro_ens_###.tif
 ```
 
-The merge stage skips merged members unless `FORCE_MERGE=1` is set. This makes
-failed or interrupted runs safe to resubmit.
+The merge stage also skips existing merged members. This makes failed or
+interrupted runs safe to resubmit.
 
 ## Dependencies
 
@@ -194,11 +217,15 @@ The workflow expects:
 - Python 3.10+
 - NumPy
 - Rasterio
+- GeoPandas and Shapely
+- Matplotlib (for outlet analysis)
 - GRASS GIS 8
 - GDAL
 - GRASS addon `r.stream.extract`
 
-Optional analysis utilities use Pandas, GeoPandas, Shapely, and Matplotlib.
+The Python dependency versions are specified in `pyproject.toml`. Run the
+synthetic regression tests with `python -m pip install -e ".[dev]"` followed by
+`python -m pytest`.
 
 ## Scheduler Examples
 

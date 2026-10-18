@@ -1,0 +1,23 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite the accompanying data article and this software repository."
+title: "Greenland hydrological drainage basins"
+type: software
+version: 0.1.0
+date-released: 2026-09-28
+authors:
+  - family-names: Deichmann
+    given-names: Anna K.
+  - family-names: Arildsen
+    given-names: Rasmus L.
+  - family-names: Karlsson
+    given-names: Nanna B.
+  - family-names: Werder
+    given-names: Mauro A.
+  - family-names: Leeson
+    given-names: Amber
+  - family-names: Sørensen
+    given-names: Louise Sandberg
+repository-code: "https://github.com/RasmusArildsen/4DGreenland_basins"
+abstract: >-
+  A reproducible ensemble workflow for delineating supraglacial, subglacial,
+  and hybrid hydrological drainage basins across the Greenland Ice Sheet.

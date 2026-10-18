@@ -4,22 +4,19 @@
 dem_mode = "surface"       # "surface" | "bed" | "hybrid"
 dem_res_m = 100            # 100 | 500
 n_members = 500
-start_i = 1
 seed_base = 0
 k_min = 0.8
 k_max = 1.0
 
 [grass]
-# Leave gisbase empty when GRASS is discoverable on PATH.
-gisbase = ""
 location = "dem_loc"
 mapset_prefix = "MC_WORK"
 ensure_addons = ["r.stream.extract"]
 gisdbase = "grassdata"
 
 [hydrology]
-stream_threshold_100m = 5000
-stream_threshold_500m = 200
+stream_threshold_100m = 5000 # 50 km2
+stream_threshold_500m = 200  # 50 km2
 corr_pix_100m = 5
 corr_pix_500m = 5
 do_fill_dir = true
@@ -54,25 +51,27 @@ surface_dir_500m = "outputs/surf_500m"
 bed_dir_500m = "outputs/bed_500m"
 hybrid_dir_500m = "outputs/hybrid_500m"
 
-save_surface_dem = false
-save_bed_dem = false
-save_phi_or_hybrid_dem = false
+# Set true only when flow-direction and stream rasters are needed for inspection.
+save_member_diagnostics = false
+
+[references]
+# Each reference is Version_0, already merged to the configured minimum basin
+# size and numbered 1..N from north around the coast clockwise.
+surf_100m = "data/reference/basins_surf_100m_version0_merged_min250km2.tif"
+bed_100m = "data/reference/basins_bed_100m_version0_merged_min250km2.tif"
+hybrid_100m = "data/reference/basins_hybrid_100m_version0_merged_min250km2.tif"
+surf_500m = "data/reference/basins_surf_500m_version0_merged_min250km2.tif"
+bed_500m = "data/reference/basins_bed_500m_version0_merged_min250km2.tif"
+hybrid_500m = "data/reference/basins_hybrid_500m_version0_merged_min250km2.tif"
 
 [postprocess]
-# "member" is the production workflow: merge every member first, then derive
-# final products from the merged ensemble.
-merge_strategy = "member"
-merge_output_subdir = "merged_members"
-merge_min_basin_km2 = 250.0
+# Apply the same minimum to Version_0 and every ensemble member.
+minimum_basin_km2 = 250.0
 merge_do_exclaves = true
-merge_max_exclave_iters = 3
+merge_max_exclave_iters = 12
 
-p_stable_pixel = 0.75
-p_min_div = 0.00
-
-# Reference-layer construction for final products.
-reference_mode = "iterative"
-reference_iterations = 2
-reference_ref_index = 0
-reference_chunk_rows = 32
-reference_raster = ""
+chunk_rows = 128
+stable_divide_probability = 0.80
+probability_chunk_rows = 4
+# Rows processed at once when creating the reviewed final delivery.
+delivery_chunk_rows = 32

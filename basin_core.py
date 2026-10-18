@@ -2,163 +2,51 @@
 from __future__ import annotations
 
 import os
-import sys
 import shutil
 import subprocess
+import sys
 from pathlib import Path
-from typing import Optional, Dict, List, Tuple
 
-# -----------------------------------------------------------------------------
-# Defaults
-# -----------------------------------------------------------------------------
-QGIS_PREFIX_DEFAULT = os.environ.get("GISBASE", "/usr/lib/grass84")
-
-# Filled after setup_grass_env()
+## These bindings are loaded after the matching GRASS installation is found.
 gs = None
 gsetup = None
 find_program = None
 CalledModuleError = RuntimeError
 
 
-# -----------------------------------------------------------------------------
-# GRASS bootstrap helpers
-# -----------------------------------------------------------------------------
-def _grass_bin() -> str:
-    """Return the GRASS launcher executable, honoring GRASS_BIN first."""
-    env_bin = os.environ.get("GRASS_BIN")
-    if env_bin:
-        p = Path(env_bin).expanduser().resolve()
-        if p.exists() and os.access(p, os.X_OK):
-            return str(p)
-        raise RuntimeError(f"GRASS_BIN is set but not executable: {p}")
-
+## Find GRASS, load its Python bindings, and create an isolated mapset.
+def _grass_executable() -> str:
+    configured = os.environ.get("GRASS_BIN")
+    if configured:
+        return configured
     for name in ("grass", "grass84", "grass82"):
-        p = shutil.which(name)
-        if p:
-            return p
+        executable = shutil.which(name)
+        if executable:
+            return executable
+    raise RuntimeError("GRASS was not found. Set GRASS_BIN or add grass to PATH.")
 
-    raise RuntimeError("No GRASS executable found. Set GRASS_BIN or put grass on PATH.")
 
-
-def _guess_gisbase() -> Path:
-    """Derive GISBASE from the selected GRASS executable only."""
-    grass_exe = _grass_bin()
-    res = subprocess.run(
+def setup_grass_env():
+    global gs, gsetup, find_program, CalledModuleError
+    grass_exe = _grass_executable()
+    result = subprocess.run(
         [grass_exe, "--config", "path"],
         check=True,
         capture_output=True,
         text=True,
-        env=os.environ.copy(),
     )
-    gisbase = Path(res.stdout.strip()).expanduser().resolve()
-    init_py = gisbase / "etc" / "python" / "grass" / "__init__.py"
-    if not init_py.exists():
-        raise RuntimeError(f"Invalid GISBASE from {grass_exe}: {gisbase}")
-    return gisbase
-
-
-def _conda_share_dir(name: str) -> Path | None:
-    conda_prefix = os.environ.get("CONDA_PREFIX")
-    if not conda_prefix:
-        return None
-    p = Path(conda_prefix) / "share" / name
-    return p if p.exists() else None
-
-
-def _grass_subprocess_env(*, for_launcher: bool = False) -> dict:
-    """
-    Build a subprocess environment that stays consistent with the chosen GRASS
-    install and the active conda environment.
-
-    When for_launcher=True, remove PYTHONPATH so the grass launcher resolves its
-    own matching Python modules instead of inheriting possibly mixed paths.
-    """
-    env = os.environ.copy()
-    grass_exe = _grass_bin()
-    gisbase = _guess_gisbase()
+    gisbase = Path(result.stdout.strip()).resolve()
     grass_python = gisbase / "etc" / "python"
-
-    env["GRASS_BIN"] = grass_exe
-    env["GISBASE"] = str(gisbase)
-    env.setdefault("LANG", "en_US.UTF-8")
-    env.setdefault("LC_ALL", "en_US.UTF-8")
-    env.setdefault("GTIFF_SRS_SOURCE", "EPSG")
-
-    env.pop("GDAL_DRIVER_PATH", None)
-    env.pop("PYTHONHOME", None)
-
-    proj_dir = _conda_share_dir("proj")
-    if proj_dir and (proj_dir / "proj.db").exists():
-        env["PROJ_LIB"] = str(proj_dir)
-        env["PROJ_DATA"] = str(proj_dir)
-    else:
-        env.pop("PROJ_LIB", None)
-        env.pop("PROJ_DATA", None)
-
-    gdal_dir = _conda_share_dir("gdal")
-    if gdal_dir:
-        env["GDAL_DATA"] = str(gdal_dir)
-    else:
-        env.pop("GDAL_DATA", None)
-
-    if for_launcher:
-        env.pop("PYTHONPATH", None)
-    else:
-        env["PYTHONPATH"] = str(grass_python)
-
-    return env
-
-
-def setup_grass_env(grass_gisbase: str | None = None):
-    """
-    Configure GRASS Python bindings so launcher, GISBASE, and Python modules all
-    come from the same installation.
-    """
-    global gs, gsetup, find_program, CalledModuleError
-
-    GISBASE = Path(grass_gisbase).resolve() if grass_gisbase else _guess_gisbase()
-    grass_exe = _grass_bin()
-    grass_python = GISBASE / "etc" / "python"
     init_py = grass_python / "grass" / "__init__.py"
     if not init_py.exists():
         raise RuntimeError(f"GRASS python not found at: {init_py}")
 
-    os.environ["GISBASE"] = str(GISBASE)
+    os.environ["GISBASE"] = str(gisbase)
     os.environ["GRASS_BIN"] = grass_exe
     os.environ["PATH"] = os.pathsep.join(
-        [
-            str(GISBASE / "bin"),
-            str(GISBASE / "scripts"),
-            os.environ.get("PATH", ""),
-        ]
+        [str(gisbase / "bin"), str(gisbase / "scripts"), os.environ.get("PATH", "")]
     )
-    os.environ.setdefault("LANG", "en_US.UTF-8")
-    os.environ.setdefault("LC_ALL", "en_US.UTF-8")
     os.environ.setdefault("GTIFF_SRS_SOURCE", "EPSG")
-    os.environ.pop("GDAL_DRIVER_PATH", None)
-    os.environ.pop("PYTHONHOME", None)
-
-    proj_dir = _conda_share_dir("proj")
-    if proj_dir and (proj_dir / "proj.db").exists():
-        os.environ["PROJ_LIB"] = str(proj_dir)
-        os.environ["PROJ_DATA"] = str(proj_dir)
-    else:
-        os.environ.pop("PROJ_LIB", None)
-        os.environ.pop("PROJ_DATA", None)
-
-    gdal_dir = _conda_share_dir("gdal")
-    if gdal_dir:
-        os.environ["GDAL_DATA"] = str(gdal_dir)
-    else:
-        os.environ.pop("GDAL_DATA", None)
-
-    sys.path = [
-        p for p in sys.path
-        if not ("/etc/python" in p and "grass" in p.lower())
-    ]
-    for name in list(sys.modules):
-        if name == "grass" or name.startswith("grass."):
-            del sys.modules[name]
 
     if str(grass_python) not in sys.path:
         sys.path.insert(0, str(grass_python))
@@ -166,200 +54,100 @@ def setup_grass_env(grass_gisbase: str | None = None):
 
     import grass.script as _gs
     import grass.script.setup as _gsetup
-    from grass.script.core import find_program as _find_program
     from grass.exceptions import CalledModuleError as _CalledModuleError
+    from grass.script.core import find_program as _find_program
 
     gs = _gs
     gsetup = _gsetup
     find_program = _find_program
     CalledModuleError = _CalledModuleError
 
-    print("✅ GISBASE:", GISBASE)
-    print("✅ grass_python:", grass_python)
-    print("✅ grass_executable:", grass_exe)
-    print("✅ PROJ_LIB:", os.environ.get("PROJ_LIB"))
-    print("✅ GDAL_DATA:", os.environ.get("GDAL_DATA"))
+    print(f"INFO: Using GRASS {grass_exe} ({gisbase})")
 
 
-def _validate_raster_with_gdalinfo(raster_path: str) -> None:
-    raster_abs = str(Path(raster_path).resolve())
-    cmd = ["gdalinfo", raster_abs]
-    res = subprocess.run(cmd, capture_output=True, text=True, env=_grass_subprocess_env(for_launcher=True))
-    if res.returncode != 0:
-        raise RuntimeError(
-            "Raster failed validation with gdalinfo.\n"
-            f"Command: {' '.join(cmd)}\n"
-            f"stdout:\n{res.stdout}\n"
-            f"stderr:\n{res.stderr}"
-        )
-
-
-from pathlib import Path
-import subprocess
-
-def ensure_location(raster_path, gisdbase, location, grass_executable=None):
-    loc_path = Path(gisdbase) / location
-
-    # If location already exists, reuse it
-    if loc_path.exists():
+def _ensure_location(raster_path: str, gisdbase: Path, location: str) -> None:
+    location_path = gisdbase / location
+    if (location_path / "PERMANENT" / "DEFAULT_WIND").exists():
         return
-
-    cmd = [
-        grass_executable or "grass",
+    environment = os.environ.copy()
+    environment.pop("PYTHONPATH", None)
+    command = [
+        _grass_executable(),
         "--text",
         "-c",
-        "EPSG:3413",
+        str(Path(raster_path).resolve()),
         "-e",
-        str(loc_path),
+        str(location_path),
     ]
+    result = subprocess.run(command, check=False, capture_output=True, text=True, env=environment)
+    if result.returncode and not (location_path / "PERMANENT" / "DEFAULT_WIND").exists():
+        raise RuntimeError(f"Could not create GRASS location:\n{result.stderr}")
 
-    proc = subprocess.run(cmd, capture_output=True, text=True)
 
-    # Success
-    if proc.returncode == 0:
-        return
-
-    # Race condition: another job created it between exists() and run()
-    stderr = proc.stderr or ""
-    stdout = proc.stdout or ""
-    combined = f"{stdout}\n{stderr}"
-
-    if "already exists" in combined or "File exists" in combined:
-        return
-
-    raise RuntimeError(
-        f"Failed to create GRASS location from EPSG:3413.\n"
-        f"Command: {' '.join(cmd)}\n"
-        f"stdout:\n{stdout}\n"
-        f"stderr:\n{stderr}"
-    )
-
-def ensure_mapset(gisdbase: Path, location: str, mapset: str) -> Path:
-    """
-    Ensure a mapset exists without invoking the GRASS launcher.
-    This avoids launcher cleanup crashes after successful mapset creation.
-    """
-    loc_path = gisdbase / location
-    perm_path = loc_path / "PERMANENT"
-    mapset_path = loc_path / mapset
+def _ensure_mapset(gisdbase: Path, location: str, mapset: str) -> Path:
+    permanent = gisdbase / location / "PERMANENT"
+    mapset_path = gisdbase / location / mapset
 
     if mapset == "PERMANENT":
-        return perm_path
-
-    if not (perm_path / "DEFAULT_WIND").exists():
-        raise RuntimeError(f"PERMANENT mapset missing or invalid: {perm_path}")
-
+        return permanent
     if mapset_path.exists() and (mapset_path / "WIND").exists():
         return mapset_path
-
     mapset_path.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(perm_path / "DEFAULT_WIND", mapset_path / "WIND")
-
+    shutil.copy2(permanent / "DEFAULT_WIND", mapset_path / "WIND")
     for name in ("VAR", "DB_DRIVER", "DB_DATABASE"):
-        src = perm_path / name
-        dst = mapset_path / name
-        if src.exists() and not dst.exists():
-            shutil.copy2(src, dst)
-
+        source = permanent / name
+        if source.exists():
+            shutil.copy2(source, mapset_path / name)
     return mapset_path
 
 
 def start_grass_from_raster(raster_path: str, *, location="dem_loc", mapset="MC_WORK", gisdbase: str | Path | None = None):
-    """
-    Ensure GRASS location+mapset exist, initialize a GRASS Python session,
-    then import the DEM and set the computational region from it.
-     """
     gisdbase = Path(gisdbase or os.environ.get("GRASS_GISDBASE") or (Path.home() / "Documents" / "grassdata"))
     gisdbase.mkdir(parents=True, exist_ok=True)
-
-    _validate_raster_with_gdalinfo(raster_path)
-
-    job_id = os.environ.get("LSB_JOBID", "manual")
-    task_id = os.environ.get("LSB_JOBINDEX", "0")
-    mapset = f"MC_WORK_{job_id}_{task_id}"
-
-    ensure_location(raster_path, gisdbase, location)
-    ensure_mapset(gisdbase, location, mapset)
-
-    GISBASE = os.environ["GISBASE"]
-    gsetup.init(str(gisdbase), location=location, mapset=mapset, grass_path=GISBASE)
+    _ensure_location(raster_path, gisdbase, location)
+    _ensure_mapset(gisdbase, location, mapset)
+    gsetup.init(str(gisdbase), location=location, mapset=mapset, grass_path=os.environ["GISBASE"])
     raster_abs = str(Path(raster_path).resolve())
     try:
         gs.run_command("g.remove", type="raster", name="dem", flags="f", quiet=True)
-    except Exception:
-        pass
+    except CalledModuleError:
+        print("INFO: No existing DEM map to remove")
     gs.run_command("r.in.gdal", input=raster_abs, output="dem", flags="o", overwrite=True)
     gs.run_command("g.region", raster="dem")
 
-    print(f"🌿 GRASS session initialized in:\n   {gisdbase / location / mapset}\n")
+    print(f"GRASS session initialized in:\n   {gisdbase / location / mapset}\n")
     print(gs.read_command("g.gisenv"))
 
     return str(gisdbase), location, mapset
 
-# -----------------------------------------------------------------------------
-# Small utilities
-# -----------------------------------------------------------------------------
+## Small GRASS utilities.
 def safe(expr: str):
     """r.mapcalc wrapper with useful error message."""
     try:
         gs.run_command("r.mapcalc", expression=expr, overwrite=True)
-    except CalledModuleError as e:
-        raise RuntimeError(f"Mapcalc failed: {expr}\n{e}")
+    except CalledModuleError as error:
+        raise RuntimeError(f"Mapcalc failed: {expr}\n{error}") from error
+
+
+def remove_mask() -> None:
+    """Remove the current GRASS mask when one is active."""
+    try:
+        gs.run_command("r.mask", flags="r")
+    except CalledModuleError:
+        print("INFO: No active GRASS mask to remove")
 
 
 def ensure_grass_addon(module_name: str):
-    """Install addon into the GRASS addon directory for the current platform.
-
-    On some HPC/conda GRASS builds, g.extension compilation can fail because the
-    build-time compiler path baked into GRASS is unavailable at runtime. In that
-    case, keep going and let downstream code decide whether the addon is
-    optional.
-    """
-    import platform
-
-    system = platform.system()
-    if system == "Darwin":
-        addon_base = Path.home() / ".grass8" / "addons"
-    elif system == "Linux":
-        addon_base = Path(os.environ.get("GRASS_ADDON_BASE", str(Path.home() / ".grass8" / "addons"))).expanduser()
-    else:
-        appdata = os.environ.get("APPDATA", str(Path.home()))
-        addon_base = Path(appdata) / "GRASS8" / "addons"
-
-    addon_base.mkdir(parents=True, exist_ok=True)
-    os.environ["GRASS_ADDON_BASE"] = str(addon_base)
-
-    addon_bin = addon_base / "bin"
-    addon_scripts = addon_base / "scripts"
-
-    os.environ["PATH"] = os.pathsep.join([
-        str(addon_bin),
-        str(addon_scripts),
-        os.environ.get("PATH", ""),
-    ])
-    os.environ["GRASS_ADDON_PATH"] = os.pathsep.join([
-        str(addon_bin),
-        str(addon_scripts),
-    ])
-
     path = find_program(module_name)
     if path:
-        print(f"✓ {module_name} at {path}")
+        print(f"INFO: Found {module_name} at {path}")
         return path
-
-    print(f"→ Installing GRASS addon: {module_name}")
-    try:
-        gs.run_command("g.extension", extension=module_name, operation="add", flags="f")
-    except Exception as e:
-        print(f"⚠️ Could not install optional GRASS addon {module_name}: {e}")
-        return None
-
+    print(f"INFO: Installing GRASS addon: {module_name}")
+    gs.run_command("g.extension", extension=module_name, operation="add", flags="f")
     path = find_program(module_name)
     if not path:
-        print(f"⚠️ GRASS addon still unavailable after install attempt: {module_name}")
-        return None
-
-    print(f"✓ {module_name} at {path}")
+        raise RuntimeError(f"GRASS addon is unavailable: {module_name}")
+    print(f"INFO: Found {module_name} at {path}")
     return path
 
 
@@ -368,12 +156,12 @@ def import_raster_native(input_path: str, out_name: str):
     raster = input_path.replace("\\", "/")
     try:
         gs.run_command("r.in.gdal", input=raster, output=out_name, flags="o", overwrite=True)
-        print(f"✓ r.in.gdal → {out_name}")
-    except Exception:
+        print(f"INFO: Imported raster with r.in.gdal: {out_name}")
+    except CalledModuleError:
         gs.run_command("r.external", input=raster, output=f"{out_name}_ext", flags="o", overwrite=True)
         gs.run_command("g.region", raster=f"{out_name}_ext")
         safe(f"{out_name} = {out_name}_ext * 1.0")
-        print(f"✓ r.external + clone → {out_name}")
+        print(f"INFO: Imported raster with r.external and clone: {out_name}")
     gs.run_command("g.region", raster=out_name)
 
 
@@ -383,11 +171,8 @@ def export_geotiff(
     *,
     gdal_type: str = "Float32",
     nodata: float = -9999,
-    force: bool = False,   # <-- NEW
 ):
     out_path = str(out_path).replace("\\", "/")
-    flags = "f" if force else ""
-
     gs.run_command(
         "r.out.gdal",
         input=map_name,
@@ -396,7 +181,7 @@ def export_geotiff(
         type=gdal_type,
         createopt="COMPRESS=LZW,TILED=YES,BIGTIFF=YES",
         nodata=nodata,
-        flags=flags,
+        flags="f",
         overwrite=True,
     )
 
@@ -406,88 +191,78 @@ def export_geotiff(
 def prepare_dem_and_mask(
     dem_path: str,
     ice_mask_path: str,
-    *,
-    dem_name: str = "dem",
-    mask_vec: str = "ice_mask_vec",
-    mask_rast: str = "ice_mask_rast",
 ):
     """
     Import DEM + vector ice mask, rasterize mask to DEM grid.
     Leaves MASK active at the end.
     Returns: (dem_name, mask_rast)
     """
-    # clear any existing MASK
-    try:
-        gs.run_command("r.mask", flags="r")
-    except Exception:
-        pass
+    remove_mask()
 
-    import_raster_native(dem_path, out_name=dem_name)
-    gs.run_command("g.region", raster=dem_name, flags="p")
+    import_raster_native(dem_path, out_name="dem")
+    gs.run_command("g.region", raster="dem", flags="p")
 
     ice_mask_abs = str(Path(ice_mask_path).resolve()).replace("\\", "/")
-    print(f"→ Importing vector ice mask from: {ice_mask_abs}")
+    print(f"INFO: Importing vector ice mask: {ice_mask_abs}")
 
     try:
-        gs.run_command("v.import", input=ice_mask_abs, output=mask_vec, overwrite=True)
-        print(f"✓ v.import → {mask_vec}")
+        gs.run_command("v.import", input=ice_mask_abs, output="ice_mask_vec", overwrite=True)
+        print("INFO: Imported mask with v.import: ice_mask_vec")
     except CalledModuleError:
-        gs.run_command("v.in.ogr", input=ice_mask_abs, output=mask_vec, overwrite=True)
-        print(f"✓ v.in.ogr → {mask_vec}")
+        gs.run_command("v.in.ogr", input=ice_mask_abs, output="ice_mask_vec", overwrite=True)
+        print("INFO: Imported mask with v.in.ogr: ice_mask_vec")
 
-    gs.run_command("g.region", raster=dem_name)
-    gs.run_command("v.to.rast", input=mask_vec, output=mask_rast, use="val", value=1, overwrite=True)
-    print(f"✓ mask rasterized → {mask_rast}")
+    gs.run_command("g.region", raster="dem")
+    gs.run_command(
+        "v.to.rast",
+        input="ice_mask_vec",
+        output="ice_mask_rast",
+        use="val",
+        value=1,
+        overwrite=True,
+    )
+    print("INFO: Rasterized mask: ice_mask_rast")
 
-    gs.run_command("r.mask", raster=mask_rast, overwrite=True)
-    print("✓ MASK set")
+    gs.run_command("r.mask", raster="ice_mask_rast", overwrite=True)
+    print("INFO: GRASS mask set")
 
-    return dem_name, mask_rast
+    return "dem", "ice_mask_rast"
 
 
-# -----------------------------------------------------------------------------
-# Hydrology pipeline + exports
-# -----------------------------------------------------------------------------
-def run_hydro_pipeline(
+## Delineate streams and basins, then export the requested rasters.
+def run_hydro_for_dem(
     hydro_dem: str,
     out_dir: str,
     stream_threshold: int,
     *,
-    tag: str = "",
+    run_idx: int,
     watershed_memory: int = 600,
     watershed_lowmem: bool = True,
     do_fill_dir: bool = True,
-    extra_exports: List[Tuple[str, str | Path, str]] | None = None,  # (map, filename, gdal_type)
+    export_diagnostics: bool = False,
 ):
     """
-    hydro_dem → (optional r.fill.dir) → r.watershed → r.stream.extract → r.stream.basins → exports.
+    hydro_dem -> optional fill -> watershed -> streams -> basins -> exports.
     Uses ice_mask_rast if present.
 
-    Standard exports:
-      flowdir_hydro{tag}.tif (Int32)
-      streams_hydro{tag}.tif (Int16)
-      basins_hydro{tag}.tif  (Int32)
+    The basin raster is always exported. Set export_diagnostics to also keep
+    the flow-direction and stream rasters for inspection.
 
-    extra_exports:
-      additional rasters to export (e.g., dem_mc_###, bed_mc_###) into out_dir or anywhere.
     """
+    tag = f"_ens_{run_idx:03d}"
     Path(out_dir).mkdir(parents=True, exist_ok=True)
 
     # Always set region to the incoming hydrology surface
     gs.run_command("g.region", raster=hydro_dem, flags="p")
 
-    # Apply mask if available
-    try:
-        gs.run_command("r.mask", raster="ice_mask_rast", overwrite=True)
-        print("✓ Mask set from ice_mask_rast")
-    except Exception:
-        print("⚠️ Could not set r.mask from ice_mask_rast (continuing without mask)")
+    gs.run_command("r.mask", raster="ice_mask_rast", overwrite=True)
+    print("INFO: Mask set from ice_mask_rast")
 
     elev_used = hydro_dem
     if do_fill_dir:
         filled = f"hydro_fill{tag}"
         filled_dir = f"hydro_fill_dir{tag}"
-        print(f"🔧 r.fill.dir on {hydro_dem} → {filled}")
+        print(f"INFO: Running r.fill.dir on {hydro_dem}: {filled}")
         gs.run_command(
             "r.fill.dir",
             input=hydro_dem,
@@ -504,7 +279,7 @@ def run_hydro_pipeline(
 
     ws_flags = "m" if watershed_lowmem else ""
 
-    print(f"🔧 r.watershed on {elev_used}")
+    print(f"INFO: Running r.watershed on {elev_used}")
     gs.run_command(
         "r.watershed",
         elevation=elev_used,
@@ -525,73 +300,33 @@ def run_hydro_pipeline(
         overwrite=True,
     )
 
-    try:
-        gs.run_command(
-            "r.stream.basins",
-            direction=flow_dir,
-            stream_rast=streams,
-            basins=basins,
-            flags="l",
-            overwrite=True,
-        )
-        print("✓ r.stream.basins completed")
-    except CalledModuleError as e:
-        print(f"⚠️ r.stream.basins failed; creating empty basins raster. Error: {e}")
-        safe(f"{basins} = 0")
+    gs.run_command(
+        "r.stream.basins",
+        direction=flow_dir,
+        stream_rast=streams,
+        basins=basins,
+        flags="l",
+        overwrite=True,
+    )
+    print("INFO: r.stream.basins completed")
 
-    exports: List[Tuple[str, str, str]] = [
-        (flow_dir, str(Path(out_dir) / f"flowdir_hydro{tag}.tif"), "Int32"),
-        (streams, str(Path(out_dir) / f"streams_hydro{tag}.tif"), "Int16"),
-        (basins, str(Path(out_dir) / f"basins_hydro{tag}.tif"), "Int32"),
+    exports: list[tuple[str, str, str]] = [
+        (basins, str(Path(out_dir) / f"basins_hydro{tag}.tif"), "Int32")
     ]
-
-    if extra_exports:
-        for m, fn, typ in extra_exports:
-            exports.append((m, str(fn), typ))
+    if export_diagnostics:
+        exports[:0] = [
+            (flow_dir, str(Path(out_dir) / f"flowdir_hydro{tag}.tif"), "Int32"),
+            (streams, str(Path(out_dir) / f"streams_hydro{tag}.tif"), "Int16"),
+        ]
 
     for name, fn, gtype in exports:
         fn = fn.replace("\\", "/")
-        try:
-            info = gs.read_command("r.info", map=name)
-            if "min =" in info and "max =" in info:
-                print(f"📤 Export {name} → {fn}")
-                export_geotiff(name, fn, gdal_type=gtype, nodata=-9999, force=True)
-            else:
-                print(f"⚠️ Skip {name}: no data detected.")
-        except Exception as e:
-            print(f"❌ Export failed {name}: {e}")
+        print(f"INFO: Exporting {name}: {fn}")
+        export_geotiff(name, fn, gdal_type=gtype, nodata=-9999)
 
-    # Clear MASK at end
-    try:
-        gs.run_command("r.mask", flags="r")
-    except Exception:
-        pass
+    remove_mask()
 
-    print(f"✅ Finished hydrology for {hydro_dem} (tag='{tag}')")
-
-
-def run_hydro_for_dem(
-    dem_name: str,
-    out_dir: str,
-    stream_threshold: int,
-    *,
-    run_idx: int | None = None,
-    watershed_memory: int = 600,
-    watershed_lowmem: bool = True,
-    do_fill_dir: bool = True,
-    extra_exports: List[Tuple[str, str | Path, str]] | None = None,
-):
-    tag = f"_mc_{run_idx:03d}" if run_idx is not None else ""
-    run_hydro_pipeline(
-        hydro_dem=dem_name,
-        out_dir=out_dir,
-        stream_threshold=stream_threshold,
-        tag=tag,
-        watershed_memory=watershed_memory,
-        watershed_lowmem=watershed_lowmem,
-        do_fill_dir=do_fill_dir,
-        extra_exports=extra_exports,
-    )
+    print(f"Hydrology complete for {hydro_dem} (tag='{tag}')")
 
 
 # -----------------------------------------------------------------------------
@@ -640,11 +375,7 @@ def build_bed_mode_dem(
     surface_smooth_size: int = 3,
     k: float = 1.0,
 ) -> str:
-    # clear mask for r.mapcalc / smoothing
-    try:
-        gs.run_command("r.mask", flags="r")
-    except Exception:
-        pass
+    remove_mask()
 
     phi = f"hyd_pot{tag}"
     compute_hydraulic_potential_maps(
@@ -667,10 +398,7 @@ def build_hybrid_mode_dem(
     surface_smooth_size_for_phi: int = 3,
     k: float = 1.0,
 ) -> str:
-    try:
-        gs.run_command("r.mask", flags="r")
-    except Exception:
-        pass
+    remove_mask()
 
     gs.run_command("g.region", raster=surface_dem)
 
@@ -712,49 +440,25 @@ def build_hybrid_mode_dem(
     return hybrid
 
 
-# -----------------------------------------------------------------------------
-# Optional postprocess merge (used by mc_postprocess.py)
-# -----------------------------------------------------------------------------
-
-
-def prepare_merge_workspace(*, gs=None, dem_path: str, res_m: int = 500, dem_map: str = "dem") -> str:
-    if gs is None:
-        if globals().get("gs", None) is None:
-            raise RuntimeError(
-                "prepare_merge_workspace needs a live GRASS session. "
-                "Call setup_grass_env() + start_grass_from_raster() first, "
-                "or pass gs=bc.gs explicitly."
-            )
-        gs = globals()["gs"]
-
-    gs.run_command("r.in.gdal", input=dem_path.replace(chr(92), "/"), output=dem_map, overwrite=True)
-    gs.run_command("g.region", raster=dem_map, res=res_m, align=dem_map)
-    return dem_map
+## Prepare the DEM used while merging small basins.
+def prepare_merge_workspace(*, gs, dem_path: str, res_m: int) -> str:
+    gs.run_command("r.in.gdal", input=dem_path.replace(chr(92), "/"), output="dem", overwrite=True)
+    gs.run_command("g.region", raster="dem", res=res_m, align="dem")
+    return "dem"
 
 
 def merge_basins(
     *,
-    gs=None,
+    gs,
     basins_input: str,
-    dem_path: Optional[str] = None,
     out_dir: str,
-    min_basin_size_km2: float = 500.0,
+    min_basin_size_km2: float = 250.0,
     res_m: int = 500,
     do_exclave_cleanup: bool = True,
     max_exclave_iters: int = 6,
     out_name: str = "basins_merged_no_small_fullcover.tif",
-    dem_map: str = "dem",
-    member_tag: Optional[str] = None,
+    member_tag: str | None = None,
 ):
-    if gs is None:
-        if globals().get("gs", None) is None:
-            raise RuntimeError(
-                "merge_basins needs a live GRASS session. "
-                "Call setup_grass_env() + start_grass_from_raster() first, "
-                "or pass gs=bc.gs explicitly."
-            )
-        gs = globals()["gs"]
-
     out_dir_p = Path(out_dir)
     out_dir_p.mkdir(parents=True, exist_ok=True)
     rule_dir = Path(os.environ.get("TMPDIR") or out_dir_p)
@@ -779,20 +483,18 @@ def merge_basins(
     basins_final_sized = f"basins_final_sized_{tag}"
     basins_merged_final = f"basins_merged_final_{tag}"
 
-    def _parse_stat_value(tok: str) -> Optional[int]:
+    def _parse_stat_value(tok: str) -> int | None:
         tok = tok.strip()
         if tok in ("", "*"):
             return None
-        if "-" in tok:
-            tok = tok.split("-", 1)[0]
         try:
-            return int(round(float(tok)))
-        except Exception:
-            return None
+            return int(tok)
+        except ValueError as error:
+            raise ValueError(f"Expected an exact integer basin ID from r.stats, got {tok!r}") from error
 
-    def _read_rstats_cn(mapname: str) -> Dict[int, int]:
+    def _read_rstats_cn(mapname: str) -> dict[int, int]:
         lines = gs.read_command("r.stats", input=mapname, flags="cn", separator=",").strip().splitlines()
-        d: Dict[int, int] = {}
+        d: dict[int, int] = {}
         for ln in lines:
             if not ln.strip():
                 continue
@@ -802,12 +504,12 @@ def merge_basins(
                 continue
             try:
                 d[cat] = int(b)
-            except Exception:
-                pass
+            except ValueError:
+                continue
         return d
 
-    def _pairs(lines: List[str]) -> List[Tuple[int, int]]:
-        out: List[Tuple[int, int]] = []
+    def _pairs(lines: list[str]) -> list[tuple[int, int]]:
+        out: list[tuple[int, int]] = []
         for ln in lines:
             ln = ln.strip()
             if not ln:
@@ -815,14 +517,17 @@ def merge_basins(
             a, b = ln.split(",", 1)
             try:
                 out.append((int(float(a)), int(float(b))))
-            except Exception:
+            except ValueError:
                 continue
         return out
 
-    def _nearest_big_counts(label_map: str, big_map: str, small_set: set[int], nearest_map: str) -> Dict[int, Dict[int, int]]:
+    def _nearest_big_counts(label_map: str, big_map: str, small_set: set[int], nearest_map: str) -> dict[int, dict[int, int]]:
         """Fallback for isolated small basins that do not touch any large basin."""
         gs.run_command("r.grow.distance", input=big_map, value=nearest_map, flags="m", overwrite=True)
-        counts_by_small: Dict[int, Dict[int, int]] = {}
+        # r.grow.distance writes DCELL values even when big_map contains IDs.
+        # Convert to CELL so r.stats counts exact categories rather than bins.
+        gs.mapcalc(f"{nearest_map} = int({nearest_map})", overwrite=True)
+        counts_by_small: dict[int, dict[int, int]] = {}
         lines = gs.read_command(
             "r.stats",
             input=f"{label_map},{nearest_map}",
@@ -839,13 +544,13 @@ def merge_basins(
                 continue
             try:
                 cnt = int(parts[2])
-            except Exception:
+            except ValueError:
                 continue
             counts_for_src = counts_by_small.setdefault(src, {})
             counts_for_src[dst] = counts_for_src.get(dst, 0) + cnt
         return counts_by_small
 
-    def _force_single_component_per_label(label_map: str, stage: str) -> Tuple[str, int]:
+    def _force_single_component_per_label(label_map: str, stage: str) -> tuple[str, int]:
         """
         Keep one connected component per basin label.
 
@@ -870,10 +575,10 @@ def merge_basins(
             separator=",",
         ).strip().splitlines()
 
-        best_by_label: Dict[int, Tuple[int, int]] = {}
-        n_components_by_label: Dict[int, int] = {}
-        label_by_component: Dict[int, int] = {}
-        count_by_component: Dict[int, int] = {}
+        best_by_label: dict[int, tuple[int, int]] = {}
+        n_components_by_label: dict[int, int] = {}
+        label_by_component: dict[int, int] = {}
+        count_by_component: dict[int, int] = {}
         all_components: set[int] = set()
 
         for ln in lines:
@@ -886,7 +591,7 @@ def merge_basins(
                 continue
             try:
                 count = int(parts[2])
-            except Exception:
+            except ValueError:
                 continue
 
             all_components.add(cid)
@@ -917,7 +622,7 @@ def merge_basins(
 
         gs.run_command("r.reclass", input=comp_map, output=drop_map, rules=str(rules_dropmask), overwrite=True)
 
-        adjacency_counts: Dict[int, Dict[int, int]] = {}
+        adjacency_counts: dict[int, dict[int, int]] = {}
 
         # Use the same 4-neighbor topology as r.clump. A distance ring can miss
         # or mis-rank one-cell islands near diagonal same-label cells.
@@ -951,7 +656,7 @@ def merge_basins(
                     continue
                 try:
                     count = int(parts[2])
-                except Exception:
+                except ValueError:
                     continue
                 counts = adjacency_counts.setdefault(cid, {})
                 counts[bid] = counts.get(bid, 0) + count
@@ -989,19 +694,16 @@ def merge_basins(
             gs.run_command("g.rename", raster=f"{coverage_next},{basins_coverage}", overwrite=True)
         return out_map, len(drop_components)
 
-    if dem_path:
-        prepare_merge_workspace(gs=gs, dem_path=dem_path, res_m=res_m, dem_map=dem_map)
-    else:
-        gs.run_command("g.region", raster=dem_map, res=res_m, align=dem_map)
+    gs.run_command("g.region", raster="dem", res=res_m, align="dem")
 
     gs.run_command("r.in.gdal", input=basins_input.replace(chr(92), "/"), output=basins_in, overwrite=True)
     gs.mapcalc(f"{basins0} = int({basins_in})", overwrite=True)
-    gs.mapcalc(f"{basins0} = if(isnull({dem_map}), null(), {basins0})", overwrite=True)
-    gs.mapcalc(f"{basins_coverage} = if(!isnull({dem_map}), 1, null())", overwrite=True)
+    gs.mapcalc(f"{basins0} = if(isnull(dem), null(), {basins0})", overwrite=True)
+    gs.mapcalc(f"{basins_coverage} = if(!isnull(dem), 1, null())", overwrite=True)
 
     cell_area_km2 = (res_m * res_m) / 1e6
-    min_cells = int(round(min_basin_size_km2 / cell_area_km2))
-    print(f"→ Merge threshold: {min_basin_size_km2} km² ≈ {min_cells} cells at {res_m} m")
+    min_cells = round(min_basin_size_km2 / cell_area_km2)
+    print(f"INFO: Merge threshold: {min_basin_size_km2} km² ({min_cells} cells at {res_m} m)")
 
     sizes = _read_rstats_cn(basins0)
     if not sizes:
@@ -1016,9 +718,9 @@ def merge_basins(
         big_ids = {largest}
         small_ids = sorted(set(sizes) - big_ids)
         small_id_set = set(small_ids)
-        print(f"ℹ️ All basins < threshold; seeding with largest basin {largest}")
+        print(f"INFO: All basins are below the threshold; keeping largest basin {largest}")
 
-    print(f"→ Big basins: {len(big_ids)}  |  Small basins: {len(small_ids)}")
+    print(f"INFO: Large basins: {len(big_ids)}; small basins: {len(small_ids)}")
 
     rules_big = rule_dir / f"big_reclass_{tag}.txt"
     with open(rules_big, "w", encoding="utf-8") as f:
@@ -1036,8 +738,7 @@ def merge_basins(
 
         rules_path = rule_dir / f"whole_basin_reclass_{tag}.txt"
         with open(rules_path, "w", encoding="utf-8") as f:
-            for bid in sorted(big_ids):
-                f.write(f"{bid} = {bid}\n")
+            f.writelines(f"{bid} = {bid}\n" for bid in sorted(big_ids))
             for sid in small_ids:
                 counts = small_to_big.get(sid)
                 if not counts:
@@ -1050,6 +751,7 @@ def merge_basins(
 
     gs.mapcalc(f"{basins_after_merge} = if(isnull({basins_coverage}), null(), {basins_after_merge})", overwrite=True)
     gs.run_command("r.grow.distance", input=basins_after_merge, value=fill_from, flags="m", overwrite=True)
+    gs.mapcalc(f"{fill_from} = int({fill_from})", overwrite=True)
     gs.mapcalc(
         f"{basins_filled} = if(isnull({basins_after_merge}) && !isnull({basins_coverage}), {fill_from}, {basins_after_merge})",
         overwrite=True,
@@ -1058,7 +760,7 @@ def merge_basins(
 
     if do_exclave_cleanup:
         for it in range(1, max_exclave_iters + 1):
-            print(f"\n→ Anti-exclave pass {it}")
+            print(f"\nAnti-exclave pass {it}")
 
             gs.run_command("r.clump", input=current, output=clumps, overwrite=True)
             cstats = gs.read_command("r.stats", input=clumps, flags="cn", separator=",").strip().splitlines()
@@ -1092,7 +794,7 @@ def merge_basins(
             print(f"  detached clumps to reassign: {len(drop_clumps)}")
 
             if not drop_clumps:
-                print("  ✓ no detached merged/fill clumps remain; stopping")
+                print("  No detached merged or fill components remain; stopping")
                 break
 
             drop_basin_ids: set[int] = set()
@@ -1110,10 +812,7 @@ def merge_basins(
                     if cid in drop_id_set and bid is not None:
                         drop_basin_ids.add(bid)
             if drop_basin_ids:
-                try:
-                    print(f"  affected basin labels: {len(drop_basin_ids)}")
-                except Exception:
-                    pass
+                print(f"  affected basin labels: {len(drop_basin_ids)}")
 
             rules_dropmask = rule_dir / f"dropmask_reclass_{tag}_iter{it}.txt"
             with open(rules_dropmask, "w", encoding="utf-8") as f:
@@ -1125,6 +824,7 @@ def merge_basins(
             current_nulled = f"{current}_nulled"
             gs.mapcalc(f"{current_nulled} = if(!isnull({dropmask}), null(), {current})", overwrite=True)
             gs.run_command("r.grow.distance", input=current_nulled, value=refill, flags="m", overwrite=True)
+            gs.mapcalc(f"{refill} = int({refill})", overwrite=True)
             gs.mapcalc(
                 f"{current} = if(!isnull({basins_coverage}), if(isnull({current_nulled}), {refill}, {current_nulled}), null())",
                 overwrite=True,
@@ -1134,10 +834,10 @@ def merge_basins(
         current_map = label_map
         last_dropped = 0
         for it in range(1, max_exclave_iters + 1):
-            print(f"\n→ {title} {it}")
+            print(f"\n{title} {it}")
             current_map, last_dropped = _force_single_component_per_label(current_map, f"{prefix}{it}")
             if not last_dropped:
-                print("  ✓ every basin label is a single connected component")
+                print("  Every basin label is a single connected component")
                 return current_map
         raise RuntimeError(
             f"{title} did not converge after {max_exclave_iters} pass(es); "
@@ -1156,9 +856,9 @@ def merge_basins(
             largest = max(final_sizes.items(), key=lambda kv: kv[1])[0]
             final_big_ids = {largest}
             final_small_ids = sorted(set(final_sizes) - final_big_ids)
-            print(f"ℹ️ Final size pass: all basins < threshold; keeping largest basin {largest}")
+            print(f"INFO: All basins remain below the threshold; keeping largest basin {largest}")
 
-        print(f"\n→ Final size pass: merging {len(final_small_ids)} basin(s) still below threshold")
+        print(f"\nFinal size pass: merging {len(final_small_ids)} basin(s) below the threshold")
 
         rules_big_final = rule_dir / f"final_big_reclass_{tag}.txt"
         with open(rules_big_final, "w", encoding="utf-8") as f:
@@ -1188,12 +888,13 @@ def merge_basins(
         gs.run_command("r.reclass", input=current, output=basins_final_sized, rules=str(rules_final_path), overwrite=True)
         current = basins_final_sized
     else:
-        print("\n✓ Final size pass: no basins below threshold")
+        print("\nFinal size pass: no basins below the threshold")
 
     if do_exclave_cleanup:
         current = _run_connected_label_passes(current, "finalconn", "Final connected-label pass")
 
     gs.run_command("r.grow.distance", input=current, value=final_refill, flags="m", overwrite=True)
+    gs.mapcalc(f"{final_refill} = int({final_refill})", overwrite=True)
     gs.mapcalc(
         f"{current} = if(!isnull({basins_coverage}), if(isnull({current}), {final_refill}, {current}), null())",
         overwrite=True,
@@ -1201,6 +902,6 @@ def merge_basins(
     gs.mapcalc(f"{basins_merged_final} = int({current})", overwrite=True)
 
     out_path = out_dir_p / out_name
-    export_geotiff(basins_merged_final, out_path, gdal_type="Int32", nodata=-9999, force=True)
-    print("✅ Done →", out_path)
+    export_geotiff(basins_merged_final, out_path, gdal_type="Int32", nodata=-9999)
+    print("Basin merge complete:", out_path)
     return out_path
